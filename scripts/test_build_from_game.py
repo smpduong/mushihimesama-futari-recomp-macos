@@ -1,17 +1,44 @@
 """Synthetic path and manifest tests for the source-only build launcher."""
 from pathlib import Path
+import re
 import tempfile
 import tomllib
 import unittest
 from unittest import mock
 import subprocess
+import sys
 
 from scripts import build_from_game as build
 
+# Use the platform's temp directory; macOS and Linux expose different paths.
+TEMP_ROOT = Path(tempfile.gettempdir()).resolve()
+
 
 class BuildFromGameTests(unittest.TestCase):
+    def test_entrypoint_factory_and_sdk_patch_hunk_are_complete(self):
+        main_template = (build.REPO / "templates/futari15-x360/main.cpp").read_text(encoding="utf-8")
+        patch_text = build.SDK_PATCH.read_text(encoding="utf-8")
+        self.assertIn("REX_DEFINE_APP(Futari15x360App, Futari15x360App::Create)", main_template)
+        self.assertIn('rex::cvar::Query<bool>("fullscreen")', patch_text)
+        self.assertIn("window_->SetFullscreen(fullscreen_registry);", patch_text)
+        self.assertNotIn("fullscreen_legacy_storage, fullscreen_source_name", patch_text)
+
+    def test_futari_compatibility_entrypoint_forwards_build_flags(self):
+        root = build.REPO
+        outputs = []
+        for script in ("futari.py", "build_from_game.py"):
+            result = subprocess.run([sys.executable, "-B", str(root / "scripts" / script), "--help"],
+                                    cwd=root, text=True, capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs.append(result.stdout)
+        option_pattern = r"--[a-z][a-z-]*"
+        self.assertEqual(set(re.findall(option_pattern, outputs[0])),
+                         set(re.findall(option_pattern, outputs[1])))
+        self.assertIn("--game-dir", outputs[0])
+        self.assertIn("--build-root", outputs[0])
+
     def test_unmocked_submodule_status_preserves_leading_clean_state(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temporary:
             root = Path(temporary)
             dependency = root / "sdk dependency with spaces"
             sdk = root / "sdk checkout with spaces"
@@ -38,7 +65,7 @@ class BuildFromGameTests(unittest.TestCase):
 
     def test_recipe_identity_is_stable_and_detects_critical_source_change(self):
         import shutil
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temporary:
             copied = Path(temporary) / "repo"
             copied.mkdir()
             for relative in build.RECIPE_FILES:
@@ -64,8 +91,19 @@ class BuildFromGameTests(unittest.TestCase):
             finally:
                 build.REPO = original
 
+    def test_build_root_inside_any_git_worktree_is_rejected(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temporary:
+            root = Path(temporary)
+            repo = root / "unrelated worktree"
+            repo.mkdir()
+            (repo / ".git").write_text("gitdir: /synthetic/private-gitdir\n", encoding="utf-8")
+            game = root / "supplied-game"
+            game.mkdir()
+            with self.assertRaisesRegex(build.BuildError, "every Git working tree"):
+                build.check_separate_roots(game, repo / "build-root")
+
     def test_game_symlink_is_rejected(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temporary:
             root = Path(temporary)
             game = root / "game"
             (game / "media/Module").mkdir(parents=True)
@@ -89,7 +127,7 @@ class BuildFromGameTests(unittest.TestCase):
                 build.validate_game(game)
 
     def test_build_root_requires_owned_marker_to_resume(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temporary:
             root = Path(temporary) / "output"
             game = Path(temporary) / "game"
             game.mkdir()
@@ -107,7 +145,7 @@ class BuildFromGameTests(unittest.TestCase):
                     build.ensure_build_root(root, resume=True, game=game)
 
     def test_raw_symlinked_parent_is_rejected_before_resolution(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temporary:
             root = Path(temporary)
             actual_parent = root / "actual"
             actual_parent.mkdir()
@@ -180,7 +218,7 @@ class BuildFromGameTests(unittest.TestCase):
             self.assertTrue(any("cache/CPM" in arg for argv in commands[:codegen_index] for arg in argv))
 
     def test_resume_parser_accepts_only_verified_patched_sdk_state(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temporary:
             root = Path(temporary)
             sdk = root / "sdk"
             (sdk / ".git").mkdir(parents=True)

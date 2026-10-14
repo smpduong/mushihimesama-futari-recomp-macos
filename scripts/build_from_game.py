@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 REPO = Path(__file__).resolve().parents[1]
 SDK_URL = "https://github.com/rexglue/rexglue-sdk.git"
 SDK_REVISION = "c94f5ebdcb3c9d1a460ca48e04f9758448f8d518"
-SDK_PATCH_SHA256 = "327d153119c2a332bf6333ab48462ac3b34383579443797bd25fd1f20dd7cb86"
+SDK_PATCH_SHA256 = "763590f9ecacd28ac7babad27d301f0ddaf0db0df7862822d4cffef30d9beaea"
 SDK_PATCH = REPO / "patches" / "rexglue-sdk-current.patch"
 APP_NAME = "futari15x360"
 ENTRYPOINT = "default.xex"
@@ -116,6 +116,17 @@ def overlaps(left: Path, right: Path) -> bool:
     return left == right or left in right.parents or right in left.parents
 
 
+def git_worktree_roots(path: Path) -> set[Path]:
+    """Find Git worktree roots above a path, including linked worktrees (.git file)."""
+    current = path if path.is_dir() else path.parent
+    roots = set()
+    for ancestor in (current, *current.parents):
+        marker = ancestor / ".git"
+        if marker.is_dir() or marker.is_file():
+            roots.add(ancestor.resolve(strict=True))
+    return roots
+
+
 def check_separate_roots(game_dir: Path, build_root: Path) -> tuple[Path, Path]:
     reject_symlink_components(game_dir)
     reject_symlink_components(build_root)
@@ -126,6 +137,8 @@ def check_separate_roots(game_dir: Path, build_root: Path) -> tuple[Path, Path]:
         raise BuildError(f"game directory does not exist: {game}")
     if overlaps(game, repo) or overlaps(build, repo) or overlaps(game, build):
         raise BuildError("repository, game directory, and build root must be separate non-overlapping paths")
+    if any(overlaps(build, root) for root in git_worktree_roots(build)):
+        raise BuildError("build root must be outside every Git working tree")
     return game, build
 
 

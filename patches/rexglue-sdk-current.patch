@@ -1169,7 +1169,7 @@ index 0000000000000000000000000000000000000000..7a1db605f22fbc22a6c5ce9390c4256d
 +
 +}  // namespace rex::ui::internal
 diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
-index b94fe9e4814b7e66305d3b983732aebdfb0bced4..e3bb66421e63fc6d3b7f83f1251e51a17eb4e80d 100644
+index b94fe9e4814b7e66305d3b983732aebdfb0bced4..00bf42fdaec1bfdf61cb77e7daa0f40d7be8b2f8 100644
 --- a/src/ui/rex_app.cpp
 +++ b/src/ui/rex_app.cpp
 @@ -38,6 +38,7 @@
@@ -1180,7 +1180,7 @@ index b94fe9e4814b7e66305d3b983732aebdfb0bced4..e3bb66421e63fc6d3b7f83f1251e51a1
  
  #include <fmt/format.h>
  #include <imgui.h>
-@@ -347,9 +348,9 @@ bool ReXApp::SetupPresentation() {
+@@ -347,9 +348,8 @@ bool ReXApp::SetupPresentation() {
    window_->AddListener(this);
    window_->AddInputListener(this, 0);
  
@@ -1188,12 +1188,11 @@ index b94fe9e4814b7e66305d3b983732aebdfb0bced4..e3bb66421e63fc6d3b7f83f1251e51a1
 -    window_->SetFullscreen(true);
 -  }
 +  const bool fullscreen_registry = rex::cvar::Query<bool>("fullscreen");
-+              fullscreen_registry, fullscreen_legacy_storage, fullscreen_source_name);
 +  window_->SetFullscreen(fullscreen_registry);
    rex::cvar::RegisterChangeCallback("fullscreen", [this](std::string_view, std::string_view value) {
      if (window_) {
        window_->SetFullscreen(rex::string::from_string<bool>(value, false));
-@@ -499,21 +500,39 @@ void ReXApp::OnClosing(ui::UIEvent& e) {
+@@ -499,21 +499,39 @@ void ReXApp::OnClosing(ui::UIEvent& e) {
    (void)e;
    REXLOG_INFO("Window closing, shutting down...");
    shutting_down_.store(true, std::memory_order_release);
