@@ -42,6 +42,9 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+import build_from_game as B  # noqa: E402
+import public_output_guard as G  # noqa: E402
 EXPECTED_BLACK = {
     "spa.bin": 827250,
     "Rom/cg_black.bin": 57743518,
@@ -130,11 +133,16 @@ def main(argv=None):
                         help="verified external pinned SDK checkout used by the selected build")
     args = parser.parse_args(argv)
     package = args.blacklabel_package
-    output = args.output_dir
-    if package.is_symlink() or not package.is_file():
-        parser.error(f"missing or symlinked package: {package}")
-    if output.exists() or output.is_symlink():
-        parser.error(f"output directory already exists: {output}")
+    try:
+        sdk_dir = B.canonical(args.sdk_dir)
+        package_inputs = G.package_input_paths([package])
+        if sdk_dir.name != "sdk" or sdk_dir.parent == ROOT:
+            raise B.BuildError("SDK path must be the external build root's sdk/ directory")
+        B.validate_sdk_checkout(sdk_dir.parent, require_outputs=True)
+        output = G.validate_output_path(args.output_dir, [ROOT, sdk_dir.parent, sdk_dir,
+                                                          *package_inputs])
+    except B.BuildError as error:
+        parser.error(str(error))
     problems = []
     before = sha(package)
     output.mkdir(parents=True)

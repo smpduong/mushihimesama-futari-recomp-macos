@@ -61,6 +61,7 @@
 !/scripts/package_launcher_ui.inc
 !/scripts/package_macos.py
 !/scripts/package_smoke.py
+!/scripts/public_output_guard.py
 !/scripts/smoke_observation.py
 !/scripts/create_source_setup_archive.py
 !/scripts/replay_bundle.mm
@@ -78,6 +79,7 @@
 !/scripts/check_public_tree.py
 !/scripts/test_public_source_hygiene.py
 !/scripts/test_build_from_game.py
+!/scripts/test_public_output_guard.py
 !/.github/
 /.github/*
 !/.github/ISSUE_TEMPLATE/

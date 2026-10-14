@@ -13,10 +13,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
 from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+import build_from_game as B
+import public_output_guard as G
 RUNTIME_NAMES = ["librexruntimed.dylib", "librexgpu-xenosd.dylib", "libTracyClientd.dylib",
                  "vulkan/lib/libMoltenVK.dylib", "vulkan/lib/libvulkan.1.dylib",
                  "vulkan/share/vulkan/icd.d/MoltenVK_icd.json"]
@@ -90,10 +92,14 @@ def dependencies(path):
     return deps[1:] if path.suffix == ".dylib" else deps
 
 
+def module_names():
+    config = B.load_public_config()
+    return ["futari15x360"] + [f"libfutari15x360_{Path(module['file']).stem}.dylib"
+                               for module in config["modules"]]
+
+
 def collect_source_inventory(build_dir, runtime_dir, game_executable=None):
-    game_manifest = tomllib.loads((ROOT / "game-work/futari15-x360/futari15x360_manifest.toml").read_text())
-    game_names = ["futari15x360"] + [f"libfutari15x360_{Path(module['guest_path']).stem}.dylib"
-                                    for module in game_manifest["modules"]]
+    game_names = module_names()
     rows = []
     for name in game_names + RUNTIME_NAMES:
         source = ((runtime_dir / name) if name in RUNTIME_NAMES else
@@ -238,18 +244,26 @@ def main():
                         help="explicit local game-data directory (bundled personal package only)")
     parser.add_argument("--content-profiles-dir", type=Path, required=True,
                         help="verified ContentProfiles tree from stage_content_profiles.py")
+    parser.add_argument("--sdk-dir", type=Path, required=True,
+                        help="external SDK checkout used to build this app; validates pinned source and notices")
     args = parser.parse_args()
-    output = args.output.absolute()
-    receipt_path = Path(str(output) + ".release-receipt.json")
-    if output.suffix != ".app" or os.path.lexists(output) or os.path.lexists(receipt_path):
-        raise SystemExit("Choose a new .app destination; existing apps are never overwritten.")
-    output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        sdk_dir = B.canonical(args.sdk_dir)
+    except B.BuildError as error:
+        parser.error(str(error))
+    if not sdk_dir.is_dir():
+        parser.error("--sdk-dir must name an existing external SDK directory")
+    if sdk_dir.name != "sdk" or sdk_dir.parent == ROOT:
+        parser.error("--sdk-dir must be the external build root's sdk/ directory")
+    try:
+        B.validate_sdk_checkout(sdk_dir.parent, require_outputs=True)
+    except (B.BuildError, OSError, subprocess.SubprocessError) as error:
+        parser.error(f"external SDK checkout is not the verified pinned build: {error}")
+    output = args.output.expanduser()
     build_dir, runtime_dir, game_data, content_profiles = (p.resolve(strict=True) for p in
         (args.build_dir, args.runtime_dir, args.game_data_dir, args.content_profiles_dir))
     game_executable = args.game_executable.resolve(strict=True) if args.game_executable else build_dir / "futari15x360"
-    manifest = tomllib.loads((ROOT / "game-work/futari15-x360/futari15x360_manifest.toml").read_text())
-    game_names = ["futari15x360"] + [f"libfutari15x360_{Path(module['guest_path']).stem}.dylib"
-                                    for module in manifest["modules"]]
+    game_names = module_names()
     runtime_names = RUNTIME_NAMES
     required = [game_executable] + [build_dir / name for name in game_names[1:]] + \
         [runtime_dir / name for name in runtime_names]
@@ -257,6 +271,17 @@ def main():
     for item in required:
         if item.is_symlink() or not item.is_file():
             raise SystemExit(f"Missing required input: {item}")
+    try:
+        output = G.validate_output_path(
+            output, [ROOT, sdk_dir.parent, sdk_dir, build_dir, runtime_dir, game_data, content_profiles,
+                     game_executable],
+        )
+    except B.BuildError as error:
+        parser.error(str(error))
+    receipt_path = Path(str(output) + ".release-receipt.json")
+    if output.suffix != ".app" or os.path.lexists(receipt_path):
+        raise SystemExit("Choose a new .app destination; existing apps are never overwritten.")
+    output.parent.mkdir(parents=True, exist_ok=True)
     stage_root = Path(tempfile.mkdtemp(prefix=f".{output.stem}-stage-", dir=output.parent))
     app = stage_root / output.name
     try:
@@ -389,13 +414,13 @@ def main():
         info_path.write_bytes(plistlib.dumps(info))
         notices = resources / "Licenses"
         notices.mkdir()
-        shutil.copy2(ROOT / "tools/rexglue-sdk/LICENSE", notices / "ReXGlue.txt")
+        shutil.copy2(sdk_dir / "LICENSE", notices / "ReXGlue.txt")
         shutil.copy2(helper_header, notices / "libarchive-api-subset.h")
-        for license_path in (ROOT / "tools/rexglue-sdk/thirdparty").rglob("*"):
+        for license_path in (sdk_dir / "thirdparty").rglob("*"):
             if license_path.is_file() and license_path.name.upper().startswith(("LICENSE", "COPYING", "NOTICE")):
                 if any(p in {".git", "out", "build"} for p in license_path.parts):
                     continue
-                target = notices / "thirdparty" / license_path.relative_to(ROOT / "tools/rexglue-sdk/thirdparty")
+                target = notices / "thirdparty" / license_path.relative_to(sdk_dir / "thirdparty")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(license_path, target)
         # Sign each Mach-O before recording package-side identities. This also

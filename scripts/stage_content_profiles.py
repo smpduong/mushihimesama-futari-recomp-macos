@@ -21,6 +21,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import test_content_install as T  # noqa: E402
 import package_macos as P  # noqa: E402
+import build_from_game as B  # noqa: E402
+import public_output_guard as G  # noqa: E402
 
 PACKAGES = {
     "ver101": {
@@ -69,18 +71,45 @@ def main():
                         help="optional selected executable outside --build-dir")
     parser.add_argument("--runtime-dir", type=Path, required=True,
                         help="selected runtime directory containing runtime/GPU/Vulkan inputs")
+    parser.add_argument("--sdk-dir", type=Path, required=True,
+                        help="external SDK checkout used to build the selected runtime")
     parser.add_argument("--ver101-package", type=Path, required=True,
                         help="user-supplied Ver. 1.01 STFS package; opened read-only")
     parser.add_argument("--blacklabel-package", type=Path, required=True,
                         help="user-supplied Black Label STFS package; opened read-only")
     args = parser.parse_args()
-    output = args.output_dir.absolute()
-    if output.exists() or output.is_symlink():
-        parser.error(f"output already exists: {output}")
+    output = args.output_dir.expanduser()
     if args.runtime_dir.is_symlink():
         parser.error(f"runtime directory must not be a symlink: {args.runtime_dir}")
     build_dir, runtime_dir = args.build_dir.resolve(strict=True), args.runtime_dir.resolve(strict=True)
+    try:
+        sdk_dir = B.canonical(args.sdk_dir)
+    except B.BuildError as error:
+        parser.error(str(error))
+    if not sdk_dir.is_dir():
+        parser.error("--sdk-dir must name an existing external SDK directory")
+    if sdk_dir.name != "sdk" or sdk_dir.parent == ROOT:
+        parser.error("--sdk-dir must be the external build root's sdk/ directory")
+    try:
+        B.validate_sdk_checkout(sdk_dir.parent, require_outputs=True)
+    except (B.BuildError, OSError, subprocess.SubprocessError) as error:
+        parser.error(f"external SDK checkout is not the verified pinned build: {error}")
     game_executable = args.game_executable.resolve(strict=True) if args.game_executable else None
+    package_args = {"ver101": args.ver101_package, "blacklabel": args.blacklabel_package}
+    for path in package_args.values():
+        if path.is_symlink() or not path.is_file():
+            parser.error(f"missing or symlinked source package: {path}")
+    packages = {name: path.resolve(strict=True) for name, path in package_args.items()}
+
+    try:
+        output = G.validate_output_path(
+            output, [ROOT, sdk_dir.parent, sdk_dir, build_dir, runtime_dir,
+                     *G.package_input_paths(packages.values()),
+                     *([game_executable] if game_executable else [])],
+        )
+    except B.BuildError as error:
+        parser.error(str(error))
+
     try:
         runtime_library = T.selected_runtime_library(runtime_dir / "librexruntimed.dylib")
     except (OSError, ValueError) as error:
@@ -91,11 +120,6 @@ def main():
     launcher_sources = P.launcher_source_inventory()
     helper_source_sha = sha(ROOT / "scripts/replay_bundle.mm")
     helper_header_sha = sha(ROOT / "scripts/libarchive_api_subset.h")
-    package_args = {"ver101": args.ver101_package, "blacklabel": args.blacklabel_package}
-    for path in package_args.values():
-        if path.is_symlink() or not path.is_file():
-            parser.error(f"missing or symlinked source package: {path}")
-    packages = {name: path.resolve(strict=True) for name, path in package_args.items()}
 
     source_rows = {}
     for name, path in packages.items():
@@ -105,16 +129,17 @@ def main():
     user_data = output / "user-data"
     provenance = output / "provenance"
     provenance.mkdir()
-    source_sha = sha(T.CM)
+    content_manager = sdk_dir / "src/system/xam/content_manager.cpp"
+    source_sha = sha(content_manager)
     driver_sha = sha(ROOT / "scripts/install_dlc_via_runtime.py")
     harness_sha = sha(ROOT / "scripts/test_content_install.py")
-    helper, counts, copied_source_sha = T.prepare_sources(provenance)
+    helper, counts, copied_source_sha = T.prepare_sources(provenance, sdk_dir)
     if copied_source_sha != source_sha:
         raise RuntimeError("content-manager source changed during preparation")
     if counts["fwrite("] < 3 or counts["fclose("] < 4 or counts["kernel_state_->title_id()"] < 5:
         raise RuntimeError(f"production substitution count drift: {counts}")
     helper_binary = provenance / "install_cli"
-    T.build(helper_binary, helper, runtime_library=runtime_library)
+    T.build(helper_binary, helper, sdk_dir, runtime_library=runtime_library)
     helper_sha = sha(helper_binary)
     helper_deps = P.dependencies(helper_binary)
     helper_rpaths = P.load_paths(helper_binary)
@@ -140,7 +165,7 @@ def main():
     for name, path in packages.items():
         if sha(path) != source_rows[name]["sha256"]:
             raise RuntimeError(f"source package changed during install: {path}")
-    if (sha(T.CM) != source_sha or sha(helper_binary) != helper_sha
+    if (sha(content_manager) != source_sha or sha(helper_binary) != helper_sha
             or sha(runtime_library) != runtime_sha or P.macho_uuid(runtime_library) != runtime_uuid):
         raise RuntimeError("installer inputs changed during staging")
 
@@ -218,7 +243,7 @@ def main():
                              "driver_sha256": driver_sha,
                              "harness": str(ROOT / "scripts/test_content_install.py"),
                              "harness_sha256": harness_sha,
-                             "content_manager_source": str(T.CM),
+                             "content_manager_source": str(content_manager),
                              "content_manager_source_sha256": source_sha,
                              "substitution_counts": counts,
                              "temporary_helper_source_sha256": sha(helper),

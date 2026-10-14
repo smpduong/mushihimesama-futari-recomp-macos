@@ -1,37 +1,26 @@
-# Preserving the locally fixed SDK
+# ReXGlue SDK source patch
 
-The SDK source tree is not vendored here. Its local changes are saved in
-`rexglue-sdk-local.patch`, against:
+`rexglue-sdk-current.patch` is the reviewed source delta for the ReXGlue
+repository at `c94f5ebdcb3c9d1a460ca48e04f9758448f8d518`. Its SHA-256 is
+`763590f9ecacd28ac7babad27d301f0ddaf0db0df7862822d4cffef30d9beaea`. The
+23 required submodule revisions, including the MoltenVK override, are listed
+in [`sdk-submodules.txt`](sdk-submodules.txt).
 
-- Repository: https://github.com/rexglue/rexglue-sdk
-- Base commit: `c94f5ebdcb3c9d1a460ca48e04f9758448f8d518`
-- MoltenVK override: `db66022459ffb663aa2b50f6b018bc2e124f5edf` (v1.4.2)
+The public build driver applies this patch only to a fresh SDK checkout at the
+pinned base, initializes its recorded submodules, and builds the required SDK
+targets in the external build root. It also uses an external dependency cache;
+it does not use private SDK clones or caches. The patch is included as source
+for the documented local workflow, not as a vendored SDK or prebuilt runtime.
 
-The patch includes dispatcher/loader fixes, code-generation changes, their SDK
-tests, and the MoltenVK gitlink update. `sdk-submodules.txt` records the pinned
-submodule state. The three source fragments under `tools/rexglue-sdk/` and the
-three project headers are newer lifecycle integration material. They are not
-part of this patch and require review against the pinned SDK before integration.
+`rexglue-sdk-local.patch` is an earlier historical checkpoint. It is not the
+patch used by the current build workflow. Do not apply either patch twice to
+the same checkout. For license scope and upstream notices, see
+[`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) and the SDK license
+file in this directory. Review the full notices at the exact pinned upstream
+revisions before redistributing any locally built SDK or app.
 
-For a **fresh clone only**, from the project root:
-
-```sh
-git clone https://github.com/rexglue/rexglue-sdk tools/rexglue-sdk
-git -C tools/rexglue-sdk checkout --detach c94f5ebdcb3c9d1a460ca48e04f9758448f8d518
-git -C tools/rexglue-sdk apply --check ../../patches/rexglue-sdk-local.patch
-git -C tools/rexglue-sdk apply --index ../../patches/rexglue-sdk-local.patch
-git -C tools/rexglue-sdk submodule update --init --recursive
-```
-
-These commands restore a reference SDK tree. They have not been validated as a
-complete build workflow for this source snapshot. Do not apply the patch twice
-to the same checkout. On a fresh checkout, `--index` also records the patched
-MoltenVK commit so submodule initialization selects the intended version.
-
-These steps restore sources, not installed dependencies or CMake caches. Follow
-the pinned SDK's build instructions to prepare the host toolchain and caches.
-The source fragments and patch are an older/newer combination that has not been
-validated together in a clean-machine build. This is not a complete guest build
-or decompilation recipe.
-
-The SDK license is reproduced in `rexglue-sdk-LICENSE.txt`.
+The clean-source guest build completed and all expected compile artifacts were
+verified on Apple silicon using a cold SDK/dependency setup and user-supplied
+nine-XEX inputs. The game was not launched, and this is not gameplay or
+personal-app packaging validation. Optional upstream SDK PPC/unit-test targets
+are disabled by the workflow and are not claimed to pass.
