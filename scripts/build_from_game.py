@@ -249,11 +249,8 @@ def validate_sdk_checkout(root: Path, require_outputs: bool) -> None:
         if len(fields) >= 2:
             expected[fields[1]] = fields[0]
     actual = {}
-    for line in capture(["git", "submodule", "status", "--recursive"], sdk).splitlines():
-        match = re.match(r"([ +-U])([0-9a-f]+)\s+(.+?)(?:\s+\([^)]*\))?$", line)
-        if not match:
-            raise BuildError("existing SDK submodule status is unreadable")
-        state, revision, path = match.groups()
+    for state, revision, path in parse_submodule_status(
+            capture(["git", "submodule", "status", "--recursive"], sdk)):
         if state != " " or expected.get(path) != revision:
             raise BuildError(f"existing SDK submodule differs from its pin: {path}")
         actual[path] = revision
@@ -416,7 +413,18 @@ def capture(argv: list[str], cwd: Path) -> str:
                             stderr=subprocess.STDOUT, check=False)
     if result.returncode:
         raise BuildError(f"read-only SDK validation command failed: {argv[0]}")
-    return result.stdout.strip()
+    # Keep leading status characters from `git submodule status` intact.
+    return result.stdout.rstrip("\r\n")
+
+
+def parse_submodule_status(status: str) -> list[tuple[str, str, str]]:
+    parsed = []
+    for line in status.splitlines():
+        match = re.match(r"([ +-U])([0-9a-f]+)\s+(.+?)(?:\s+\([^)]*\))?$", line)
+        if not match:
+            raise BuildError("existing SDK submodule status is unreadable")
+        parsed.append(match.groups())
+    return parsed
 
 
 def sdk_setup_commands(root: Path, jobs: int) -> list[tuple[Path, list[str]]]:
@@ -474,11 +482,7 @@ def sdk_setup_commands(root: Path, jobs: int) -> list[tuple[Path, list[str]]]:
         status = capture(["git", "submodule", "status", "--recursive"], sdk)
         actual = {}
         incomplete = False
-        for line in status.splitlines():
-            match = re.match(r"([ +-U])([0-9a-f]+)\s+(.+?)(?:\s+\([^)]*\))?$", line)
-            if not match:
-                raise BuildError("existing SDK submodule status is unreadable")
-            state, revision, path = match.groups()
+        for state, revision, path in parse_submodule_status(status):
             if state in {"+", "U"}:
                 raise BuildError(f"existing SDK submodule differs from its pin: {path}")
             if state == "-":

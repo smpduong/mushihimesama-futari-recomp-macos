@@ -10,6 +10,32 @@ from scripts import build_from_game as build
 
 
 class BuildFromGameTests(unittest.TestCase):
+    def test_unmocked_submodule_status_preserves_leading_clean_state(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+            root = Path(temporary)
+            dependency = root / "sdk dependency with spaces"
+            sdk = root / "sdk checkout with spaces"
+
+            def git(*args):
+                subprocess.run(["git", *map(str, args)], check=True, capture_output=True)
+
+            git("init", "-q", dependency)
+            (dependency / "README.md").write_text("synthetic dependency\n", encoding="utf-8")
+            git("-C", dependency, "add", "README.md")
+            git("-C", dependency, "-c", "user.name=Fixture", "-c",
+                "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
+            git("init", "-q", sdk)
+            git("-C", sdk, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+                dependency, "thirdparty/fixture")
+            git("-C", sdk, "-c", "user.name=Fixture", "-c",
+                "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
+
+            captured = build.capture(["git", "submodule", "status", "--recursive"], sdk)
+            self.assertTrue(captured.startswith(" "), captured)
+            parsed = build.parse_submodule_status(captured)
+            self.assertEqual(parsed[0][0], " ")
+            self.assertEqual(parsed[0][2], "thirdparty/fixture")
+
     def test_recipe_identity_is_stable_and_detects_critical_source_change(self):
         import shutil
         with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
