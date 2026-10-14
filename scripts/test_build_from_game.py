@@ -10,6 +10,21 @@ from scripts import build_from_game as build
 
 
 class BuildFromGameTests(unittest.TestCase):
+    def test_recipe_identity_is_stable_and_detects_critical_source_change(self):
+        import shutil
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+            copied = Path(temporary) / "repo"
+            copied.mkdir()
+            for relative in build.RECIPE_FILES:
+                target = copied / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(build.REPO / relative, target)
+            first = build.recipe_identity(copied)
+            self.assertEqual(first, build.recipe_identity(copied))
+            changed = copied / "config/futari15x360.json"
+            changed.write_bytes(changed.read_bytes() + b" ")
+            self.assertNotEqual(first["files_sha256"], build.recipe_identity(copied)["files_sha256"])
+
     def test_path_overlap_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             parent = Path(temporary) / "repo with spaces"
@@ -154,8 +169,9 @@ class BuildFromGameTests(unittest.TestCase):
             submodules = []
             for line in (build.REPO / "patches/sdk-submodules.txt").read_text(encoding="utf-8").splitlines():
                 fields = line.strip().lstrip("+").split()
-                if len(fields) == 2:
+                if len(fields) >= 2:
                     submodules.append(f" {fields[0]} {fields[1]}")
+            submodules[0] += " (heads/main)"
 
             def fake_capture(argv, cwd):
                 if argv[1:3] == ["-C", str(sdk / "thirdparty")]:

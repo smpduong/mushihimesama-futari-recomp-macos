@@ -73,12 +73,7 @@
 !/scripts/test_package_launcher_bundle.py
 !/scripts/test_package_smoke_relocation.py
 !/scripts/test_smoke_observation.py
-!/scripts/test_release_tooling.py
 !/scripts/test_source_setup_archive.py
-!/scripts/test_replay_bundle_native.py
-!/scripts/test_replay_host_exit_semantics.py
-!/scripts/test_replay_launcher.py
-!/scripts/test_replay_library.py
 !/scripts/libarchive_api_subset.h
 !/scripts/check_public_tree.py
 !/scripts/test_public_source_hygiene.py

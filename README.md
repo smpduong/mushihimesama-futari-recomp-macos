@@ -33,12 +33,14 @@ No license for the game or its data is provided.
 
 ## Repository checks
 
-Run the source-tree hygiene scan and synthetic archive tests with Python 3:
+Run the source-tree hygiene scan and the explicitly selected synthetic test
+cases with Python 3:
 
 ```sh
 python3 -B scripts/check_public_tree.py
 python3 -B -m unittest \
   scripts.test_public_source_hygiene \
+  scripts.test_build_from_game \
   scripts.test_source_setup_archive.SourceSetupArchiveTests.test_archive_contains_exact_allowlist_and_no_unlisted_asset \
   scripts.test_source_setup_archive.SourceSetupArchiveTests.test_existing_archive_is_never_overwritten \
   scripts.test_source_setup_archive.SourceSetupArchiveTests.test_missing_allowlisted_file_fails_before_creation

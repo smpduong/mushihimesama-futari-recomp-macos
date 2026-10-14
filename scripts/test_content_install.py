@@ -42,8 +42,6 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SDK = ROOT / "tools/rexglue-sdk"
-CM = SDK / "src/system/xam/content_manager.cpp"
 EXPECTED_BLACK = {
     "spa.bin": 827250,
     "Rom/cg_black.bin": 57743518,
@@ -71,10 +69,13 @@ def sha(p, n=1 << 20):
     return h.hexdigest()
 
 
-def prepare_sources(tmp: pathlib.Path):
+def prepare_sources(tmp: pathlib.Path, sdk_dir: pathlib.Path):
     """Copy content_manager.cpp, apply the three substitutions, verify."""
-    original_sha = sha(CM)
-    src = CM.read_text()
+    from build_from_game import canonical
+    sdk_dir = canonical(pathlib.Path(sdk_dir))
+    cm = sdk_dir / "src/system/xam/content_manager.cpp"
+    original_sha = sha(cm)
+    src = cm.read_text()
     subs = [
         ("fwrite(", "rextest_fwrite("),
         ("fclose(", "rextest_fclose("),
@@ -85,7 +86,7 @@ def prepare_sources(tmp: pathlib.Path):
         src = src.replace(old, new)
     copy = tmp / "content_manager_rextest.cpp"
     copy.write_text(src)
-    if sha(CM) != original_sha:
+    if sha(cm) != original_sha:
         raise SystemExit("FATAL: source changed during preparation")
     return copy, counts, original_sha
 
@@ -98,18 +99,20 @@ def selected_runtime_library(path: pathlib.Path):
     return path.resolve(strict=True)
 
 
-def build(exe: pathlib.Path, cm_copy: pathlib.Path, runtime_library=None):
+def build(exe: pathlib.Path, cm_copy: pathlib.Path, sdk_dir: pathlib.Path, runtime_library=None):
+    from build_from_game import canonical
+    sdk = canonical(pathlib.Path(sdk_dir))
     cmd = ["/usr/bin/clang++", "-std=c++23", "-DREX_PLATFORM_MAC=1",
            "-DSPDLOG_FMT_EXTERNAL",
-           *[f"-I{SDK / p}" for p in INCLUDES],
-           "-I", str(SDK / "src/system/xam"),
+           *[f"-I{sdk / p}" for p in INCLUDES],
+           "-I", str(sdk / "src/system/xam"),
            "-I", str(ROOT / "scripts"),
            "-include", str(ROOT / "scripts/test_content_install_decls.h"),
            str(ROOT / "scripts/test_content_install.cpp"),
            str(cm_copy), "-o", str(exe)]
     if runtime_library is None:
         # Retain the legacy standalone fixture route for existing diagnostics.
-        runtime_dir = SDK / "out/mac-arm64/Debug"
+        runtime_dir = sdk / "out/mac-arm64/Debug"
         cmd.extend([f"-L{runtime_dir}", "-lrexruntimed", f"-Wl,-rpath,{runtime_dir}"])
     else:
         selected = selected_runtime_library(runtime_library)
@@ -123,6 +126,8 @@ def main(argv=None):
                         help="user-supplied Black Label STFS package; opened read-only")
     parser.add_argument("--output-dir", type=pathlib.Path, required=True,
                         help="new test-output directory; existing paths are refused")
+    parser.add_argument("--sdk-dir", type=pathlib.Path, required=True,
+                        help="verified external pinned SDK checkout used by the selected build")
     args = parser.parse_args(argv)
     package = args.blacklabel_package
     output = args.output_dir
@@ -136,7 +141,7 @@ def main(argv=None):
 
     with tempfile.TemporaryDirectory(prefix="rextest-install-") as td:
         tmp = pathlib.Path(td)
-        cm_copy, counts, original_sha = prepare_sources(tmp)
+        cm_copy, counts, original_sha = prepare_sources(tmp, args.sdk_dir)
         print(f"substitution counts: {counts}")
         if counts["fwrite("] < 3 or counts["fclose("] < 4 \
                 or counts["kernel_state_->title_id()"] < 5:
@@ -144,7 +149,7 @@ def main(argv=None):
                             "content_manager.cpp drifted?")
 
         exe = tmp / "test_content_install"
-        build(exe, cm_copy)
+        build(exe, cm_copy, args.sdk_dir)
 
         # All cases run inside one binary; the binary returns a bitmask of
         # failures. Full logs land in the explicitly selected new output dir.

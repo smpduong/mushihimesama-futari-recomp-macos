@@ -38,6 +38,18 @@ MODULES = (
     "hirow_normal.xex", "hirow_abnormal.xex",
 )
 MARKER = ".futari-public-build-root.json"
+RECIPE_FILES = (
+    "scripts/build_from_game.py",
+    "config/futari15x360.json",
+    "templates/futari15-x360/CMakeLists.txt",
+    "templates/futari15-x360/main.cpp",
+    "templates/futari15-x360/rexglue.cmake",
+    "game-work/futari15-x360/src/futari15x360_app.h",
+    "game-work/futari15-x360/src/futari_config_paths.h",
+    "game-work/futari15-x360/src/futari_profile_lease.h",
+    "patches/rexglue-sdk-current.patch",
+    "patches/sdk-submodules.txt",
+)
 MAX_LOG_BYTES = 16 * 1024 * 1024
 COMMAND_TIMEOUT_SECONDS = 7200
 MIN_FREE_BYTES = 12 * 1024 * 1024 * 1024
@@ -45,6 +57,24 @@ MIN_FREE_BYTES = 12 * 1024 * 1024 * 1024
 
 class BuildError(RuntimeError):
     pass
+
+
+def recipe_identity(repo: Path = REPO) -> dict:
+    """Hash the source/configuration that determines generated build inputs."""
+    hashes = {}
+    for relative in RECIPE_FILES:
+        path = repo / relative
+        if path.is_symlink() or not path.is_file():
+            raise BuildError(f"critical build recipe file is missing or unsafe: {relative}")
+        hashes[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    identity = {"files_sha256": hashes}
+    try:
+        head = capture(["git", "rev-parse", "HEAD"], repo)
+    except (OSError, BuildError, subprocess.SubprocessError):
+        head = ""
+    if re.fullmatch(r"[0-9a-f]{40,64}", head):
+        identity["git_head"] = head
+    return identity
 
 
 def reject_symlink_components(path: Path) -> None:
@@ -216,11 +246,11 @@ def validate_sdk_checkout(root: Path, require_outputs: bool) -> None:
     expected = {}
     for line in (REPO / "patches/sdk-submodules.txt").read_text(encoding="utf-8").splitlines():
         fields = line.strip().lstrip("+").split()
-        if len(fields) == 2:
+        if len(fields) >= 2:
             expected[fields[1]] = fields[0]
     actual = {}
     for line in capture(["git", "submodule", "status", "--recursive"], sdk).splitlines():
-        match = re.match(r"([ +-U])([0-9a-f]+)\s+(.+)$", line)
+        match = re.match(r"([ +-U])([0-9a-f]+)\s+(.+?)(?:\s+\([^)]*\))?$", line)
         if not match:
             raise BuildError("existing SDK submodule status is unreadable")
         state, revision, path = match.groups()
@@ -260,6 +290,7 @@ def ensure_build_root(path: Path, resume: bool, game: Path) -> Path:
             "sdk_patch_sha256": SDK_PATCH_SHA256,
             "config_sha256": hashlib.sha256((REPO / "config" / "futari15x360.json").read_bytes()).hexdigest(),
             "build_root": str(root), "game_root": str(game.resolve()), "input_sha256": fingerprints,
+            "recipe_identity": recipe_identity(),
         }
         if (isinstance(record, dict) and record.get("schema") == 1
                 and record.get("repo") == str(REPO.resolve())
@@ -305,6 +336,7 @@ def ensure_build_root(path: Path, resume: bool, game: Path) -> Path:
                                       "sdk_patch_sha256": SDK_PATCH_SHA256,
                                       "config_sha256": hashlib.sha256((REPO / "config" / "futari15x360.json").read_bytes()).hexdigest(),
                                       "build_root": str(root), "game_root": str(game.resolve()),
+                                      "recipe_identity": recipe_identity(),
                                       "input_sha256": {name: hashlib.sha256(path.read_bytes()).hexdigest()
                                                        for name, path in inputs.items()},
                                       "created_utc": datetime.now(timezone.utc).isoformat()},
@@ -437,13 +469,13 @@ def sdk_setup_commands(root: Path, jobs: int) -> list[tuple[Path, list[str]]]:
         expected = {}
         for line in (REPO / "patches/sdk-submodules.txt").read_text(encoding="utf-8").splitlines():
             fields = line.strip().lstrip("+").split()
-            if len(fields) == 2:
+            if len(fields) >= 2:
                 expected[fields[1]] = fields[0]
         status = capture(["git", "submodule", "status", "--recursive"], sdk)
         actual = {}
         incomplete = False
         for line in status.splitlines():
-            match = re.match(r"([ +-U])([0-9a-f]+)\s+(.+)$", line)
+            match = re.match(r"([ +-U])([0-9a-f]+)\s+(.+?)(?:\s+\([^)]*\))?$", line)
             if not match:
                 raise BuildError("existing SDK submodule status is unreadable")
             state, revision, path = match.groups()
