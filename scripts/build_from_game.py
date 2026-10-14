@@ -28,6 +28,10 @@ REPO = Path(__file__).resolve().parents[1]
 SDK_URL = "https://github.com/rexglue/rexglue-sdk.git"
 SDK_REVISION = "c94f5ebdcb3c9d1a460ca48e04f9758448f8d518"
 SDK_PATCH_SHA256 = "763590f9ecacd28ac7babad27d301f0ddaf0db0df7862822d4cffef30d9beaea"
+# Exact output of the pinned SDK's RefreshGeneratedGlue emitter for this
+# project's stable name/version/entrypoint directory. Codegen intentionally
+# replaces the public seed template with this SDK-owned file.
+SDK_GENERATED_GLUE_SHA256 = "ef1ff108d9753c5ca3be1cacf74d8f84e78cdfc0d8aaa8b994237ceeac19505c"
 SDK_PATCH = REPO / "patches" / "rexglue-sdk-current.patch"
 APP_NAME = "futari15x360"
 ENTRYPOINT = "default.xex"
@@ -590,7 +594,14 @@ def write_project(game: Path, root: Path) -> tuple[Path, Path]:
             raise BuildError(f"refusing symlinked project file: {destination}")
         payload = source.read_bytes()
         if destination.exists():
-            if not destination.is_file() or destination.read_bytes() != payload:
+            matches_source = destination.is_file() and destination.read_bytes() == payload
+            is_sdk_generated_glue = (
+                relative == "generated/rexglue.cmake"
+                and destination.is_file()
+                and hashlib.sha256(destination.read_bytes()).hexdigest()
+                == SDK_GENERATED_GLUE_SHA256
+            )
+            if not matches_source and not is_sdk_generated_glue:
                 raise BuildError(f"refusing to overwrite project file: {destination}")
         else:
             destination.write_bytes(payload)
@@ -641,6 +652,28 @@ def verify_artifacts(build: Path) -> None:
     if missing:
         raise BuildError("build command completed but required outputs are missing/empty: "
                          + ", ".join(missing))
+
+
+def verify_sdk_generated_glue(project: Path) -> None:
+    """Require codegen's single SDK-owned CMake output to match the pinned emitter."""
+    generated = project / "generated"
+    glue = generated / "rexglue.cmake"
+    if generated.is_symlink() or glue.is_symlink():
+        raise BuildError("SDK codegen produced symlinked generated/rexglue.cmake")
+    if not glue.is_file():
+        raise BuildError("SDK codegen did not produce generated/rexglue.cmake")
+    digest = hashlib.sha256(glue.read_bytes()).hexdigest()
+    if digest != SDK_GENERATED_GLUE_SHA256:
+        raise BuildError("SDK-generated rexglue.cmake differs from the pinned emitter output")
+
+
+def run_build_commands(commands: list[tuple[Path, list[str]]], log_dir: Path) -> None:
+    """Run planned commands and validate SDK glue before the post-codegen configure."""
+    for index, (cwd, argv) in enumerate(commands, 1):
+        command(argv, cwd, log_dir / f"{index:02d}.log", False)
+        if (argv[:2] == ["cmake", "--build"]
+                and f"{APP_NAME}_codegen" in argv):
+            verify_sdk_generated_glue(cwd)
 
 
 def main() -> int:
@@ -712,8 +745,7 @@ def main() -> int:
         if run_logs.exists() or run_logs.is_symlink():
             raise BuildError(f"refusing to overwrite run logs: {run_logs}")
         run_logs.mkdir()
-        for index, (cwd, argv) in enumerate(commands, 1):
-            command(argv, cwd, run_logs / f"{index:02d}.log", False)
+        run_build_commands(commands, run_logs)
         verify_artifacts(root / "build")
         print(f"Build completed. Executable: {root / 'build' / APP_NAME}")
         print("The game was not launched. No game or user-data files were modified.")

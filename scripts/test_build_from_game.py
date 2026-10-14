@@ -197,6 +197,70 @@ class BuildFromGameTests(unittest.TestCase):
             with self.assertRaisesRegex(build.BuildError, "refusing to overwrite"):
                 build.write_project(game, root)
 
+    def test_project_accepts_only_exact_sdk_emitted_glue_on_resume(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "build root"
+            root.mkdir()
+            game = Path(temporary) / "game files"
+            project, _manifest = build.write_project(game, root)
+            generated = project / "generated/rexglue.cmake"
+            sdk_output = b"# exact synthetic SDK-emitted glue fixture\n"
+            generated.write_bytes(sdk_output)
+            expected_hash = build.hashlib.sha256(sdk_output).hexdigest()
+            with self.assertRaisesRegex(build.BuildError, "refusing to overwrite"):
+                build.write_project(game, root)
+            with mock.patch.object(build, "SDK_GENERATED_GLUE_SHA256", expected_hash):
+                build.write_project(game, root)
+                self.assertEqual(generated.read_bytes(), sdk_output)
+                generated.write_bytes(sdk_output + b"# unreviewed edit\n")
+                with self.assertRaisesRegex(build.BuildError, "refusing to overwrite"):
+                    build.write_project(game, root)
+
+    def test_codegen_verifies_exact_glue_before_later_commands(self):
+        sdk_output = b"# synthetic pinned SDK emitter output\n"
+        expected_hash = build.hashlib.sha256(sdk_output).hexdigest()
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temporary, \
+                mock.patch.object(build, "SDK_GENERATED_GLUE_SHA256", expected_hash):
+            project = Path(temporary) / "project"
+            generated = project / "generated"
+            generated.mkdir(parents=True)
+            codegen = (project, ["cmake", "--build", "build", "--target",
+                                 f"{build.APP_NAME}_codegen"])
+            configure = (project, ["cmake", "-S", "project", "-B", "build"])
+            logs = Path(temporary) / "logs"
+            logs.mkdir()
+
+            def successful_command(argv, cwd, log, dry_run):
+                if f"{build.APP_NAME}_codegen" in argv:
+                    (cwd / "generated/rexglue.cmake").write_bytes(sdk_output)
+
+            with mock.patch.object(build, "command", side_effect=successful_command) as run:
+                build.run_build_commands([codegen, configure], logs)
+                self.assertEqual(run.call_count, 2)
+                self.assertEqual(generated.joinpath("rexglue.cmake").read_bytes(), sdk_output)
+
+            scenarios = {
+                "unknown": lambda path: path.write_bytes(b"unknown emitter output"),
+                "changed": lambda path: path.write_bytes(sdk_output + b"# changed\n"),
+                "symlink": lambda path: path.symlink_to(generated / "fixture.txt"),
+                "missing": lambda path: None,
+            }
+            for name, create_output in scenarios.items():
+                with self.subTest(output=name):
+                    glue = generated / "rexglue.cmake"
+                    if glue.is_symlink() or glue.exists():
+                        glue.unlink()
+                    fixture = generated / "fixture.txt"
+                    fixture.write_text("synthetic target\n", encoding="utf-8")
+                    create_output(glue)
+                    with mock.patch.object(build, "command") as run:
+                        with self.assertRaises(build.BuildError):
+                            build.run_build_commands([codegen, configure], logs)
+                        self.assertEqual(run.call_count, 1)
+                    if glue.is_symlink() or glue.exists():
+                        glue.unlink()
+                    fixture.unlink()
+
     def test_plan_is_deterministic_and_has_no_private_override_input(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "build root"
