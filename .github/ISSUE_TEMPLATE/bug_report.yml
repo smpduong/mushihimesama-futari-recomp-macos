@@ -1,0 +1,28 @@
+name: Bug report
+description: Report a reproducible issue in the included host tools
+title: ""
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach game files, saves, replays, credentials, or personal receipts.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the behavior and the expected result.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Prefer synthetic inputs. Remove local paths and identifying details.
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Source version
+      description: Commit or release identifier, if known.

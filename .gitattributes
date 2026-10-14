@@ -1,0 +1,11 @@
+* -filter
+*.md text eol=lf
+*.py text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.mm text eol=lf
+*.inc text eol=lf
+*.patch text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.txt text eol=lf

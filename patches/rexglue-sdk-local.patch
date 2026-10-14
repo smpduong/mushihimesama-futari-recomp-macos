@@ -1,0 +1,698 @@
+diff --git a/include/rex/system/function_dispatcher.h b/include/rex/system/function_dispatcher.h
+index 916f3d6..86c55a9 100644
+--- a/include/rex/system/function_dispatcher.h
++++ b/include/rex/system/function_dispatcher.h
+@@ -107,11 +107,18 @@ class FunctionDispatcher : public IModuleRegistrar {
+   /**
+    * Unregister `module_id`: clears its function-table entries, releases its
+    * thunk pool, and removes its per-module function table. Returns the
+-   * cleared thunk-pool range `[lo, hi)` for external cache invalidation, or
++   * cleared guest-address range `[lo, hi)` for external cache invalidation, or
+    * nullopt if the module was not registered.
+    */
+   std::optional<std::pair<uint32_t, uint32_t>> UnregisterModule(const std::string& module_id);
+ 
++  /**
++   * Unregister non-entrypoint function tables whose image ranges overlap the supplied
++   * guest image range. Returns ranges covering cleared guest code+thunk space.
++   */
++  std::vector<std::pair<uint32_t, uint32_t>> UnregisterModulesOverlappingImageRange(
++      uint32_t image_base, uint32_t image_size);
++
+  private:
+   bool Execute(ThreadState* thread_state, uint32_t address);
+ 
+diff --git a/src/codegen/project_recompiler.cpp b/src/codegen/project_recompiler.cpp
+index 240bcb0..26a6f39 100644
+--- a/src/codegen/project_recompiler.cpp
++++ b/src/codegen/project_recompiler.cpp
+@@ -261,6 +261,14 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
+   ReportBinaryInfo(opts.reporter, entry_display_name,
+                    *runtime->kernel_state()->GetExecutableModule()->xex_module());
+ 
++  // Modules can be overlays sharing a guest address range. Their section data
++  // points into Runtime memory, so snapshot each image before loading another
++  // one can overwrite it. BinaryView owns both the bytes and import metadata.
++  std::vector<BinaryView> binaries;
++  binaries.reserve(targeted.size());
++  binaries.push_back(BinaryView::fromModule(
++      *runtime->kernel_state()->GetExecutableModule()->xex_module()));
++
+   std::vector<rex::system::object_ref<rex::system::UserModule>> dllModules;
+   for (size_t i = 1; i < targeted.size(); ++i) {
+     const auto& dllConfig = targeted[i].config;
+@@ -289,6 +297,7 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
+                      userMod->xex_module()->base_address());
+     auto dll_display_name = std::filesystem::path(targeted[i].config.filePath).filename().string();
+     ReportBinaryInfo(opts.reporter, dll_display_name, *userMod->xex_module());
++    binaries.push_back(BinaryView::fromModule(*userMod->xex_module()));
+     dllModules.push_back(std::move(userMod));
+   }
+ 
+@@ -306,8 +315,7 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
+   auto* resolver = runtime->export_resolver();
+ 
+   {
+-    auto execMod = runtime->kernel_state()->GetExecutableModule();
+-    auto bv = BinaryView::fromModule(*execMod->xex_module());
++    auto bv = std::move(binaries[0]);
+ 
+     auto entry_display = make_display_name(targeted[0].config.filePath);
+     RecompilerConfig cfg = std::move(targeted[0].config);
+@@ -329,8 +337,7 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
+   }
+ 
+   for (size_t i = 0; i < dllModules.size(); ++i) {
+-    auto& userMod = dllModules[i];
+-    auto bv = BinaryView::fromModule(*userMod->xex_module());
++    auto bv = std::move(binaries[i + 1]);
+ 
+     auto dll_display = make_display_name(targeted[i + 1].config.filePath);
+     RecompilerConfig cfg = std::move(targeted[i + 1].config);
+@@ -400,6 +407,10 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
+     uint32_t a_base = contexts[i].ctx.binary().baseAddress();
+     uint32_t a_end = a_base + contexts[i].ctx.binary().imageSize();
+     for (size_t j = i + 1; j < contexts.size(); ++j) {
++      // DLL overlays are emitted as separate shared libraries and need not be
++      // resident together. The entrypoint must remain disjoint from each DLL.
++      if (contexts[i].ctx.isDllModule() && contexts[j].ctx.isDllModule())
++        continue;
+       uint32_t b_base = contexts[j].ctx.binary().baseAddress();
+       uint32_t b_end = b_base + contexts[j].ctx.binary().imageSize();
+       if (a_base < b_end && b_base < a_end) {
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_modules.cpp b/src/kernel/xboxkrnl/xboxkrnl_modules.cpp
+index dcd2001..ab2327d 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_modules.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_modules.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <rex/kernel/xboxkrnl/private.h>
+ #include <rex/logging.h>
++#include <cstdio>
+ #include <rex/hook.h>
+ #include <rex/thread/mutex.h>
+ #include <rex/types.h>
+@@ -118,6 +119,10 @@ u32 XexLoadImage_entry(mapped_string module_name, u32 module_flags, u32 min_vers
+ 
+   *hmodule_ptr = hmodule;
+ 
++  // Always-printed: module loads are rare and critical for multi-XEX titles.
++  fprintf(stderr, "[mod] XexLoadImage('%s') -> 0x%08X hmodule=0x%08X\n",
++          module_name.value().data(), (uint32_t)result, hmodule);
++  fflush(stderr);
+   return result;
+ }
+ 
+diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
+index bd43109..d3712b2 100644
+--- a/src/system/function_dispatcher.cpp
++++ b/src/system/function_dispatcher.cpp
+@@ -22,6 +22,7 @@
+ #include <rex/runtime.h>
+ #include <rex/system/function_dispatcher.h>
+ #include <rex/system/thread_state.h>
++#include <cstdio>
+ 
+ namespace rex::runtime {
+ 
+@@ -35,6 +36,10 @@ FunctionDispatcher* GetBoundFunctionDispatcher() {
+ }  // namespace
+ 
+ static void InvalidFunctionTrap(PPCContext& ctx, uint8_t* /*base*/) {
++  // Always-printed trap address: REX_FATAL may not flush before abort.
++  fprintf(stderr, "[trap] invalid guest function 0x%08X (lr=0x%08X)\n",
++          ctx.last_indirect_target, (uint32_t)ctx.lr);
++  fflush(stderr);
+   REX_FATAL("Call to invalid or unregistered function at guest address 0x{:08X}",
+             ctx.last_indirect_target);
+ }
+@@ -377,13 +382,19 @@ std::optional<std::pair<uint32_t, uint32_t>> FunctionDispatcher::UnregisterModul
+ 
+   std::optional<std::pair<uint32_t, uint32_t>> cleared_range;
+   if (table_it != module_tables_.end()) {
+-    uint32_t pool_start = table_it->code_base + table_it->code_size;
+-    uint32_t pool_end = table_it->next_thunk_address;
++    const uint32_t code_start = table_it->code_base;
++    const uint32_t code_end = table_it->code_base + table_it->code_size;
++    const uint32_t pool_start = table_it->code_base + table_it->code_size;
++    const uint32_t pool_end = table_it->next_thunk_address;
++    for (uint32_t addr = code_start; addr < code_end; addr += 4) {
++      function_table_.erase(addr);
++      memory_->SetFunction(addr, nullptr);
++    }
+     for (uint32_t addr = pool_start; addr < pool_end; addr += 4) {
+       function_table_.erase(addr);
+       memory_->SetFunction(addr, nullptr);
+     }
+-    cleared_range = std::make_pair(pool_start, pool_end);
++    cleared_range = std::make_pair(code_start, pool_end);
+ 
+     if (table_it->code_base == entrypoint_code_base_) {
+       entrypoint_code_base_ = 0;
+@@ -397,4 +408,82 @@ std::optional<std::pair<uint32_t, uint32_t>> FunctionDispatcher::UnregisterModul
+   return cleared_range;
+ }
+ 
++std::vector<std::pair<uint32_t, uint32_t>> FunctionDispatcher::UnregisterModulesOverlappingImageRange(
++    uint32_t image_base, uint32_t image_size) {
++  std::lock_guard<std::recursive_mutex> lock(dispatch_mutex_);
++  if (image_size == 0) {
++    return {};
++  }
++
++  const uint64_t incoming_end = static_cast<uint64_t>(image_base) + image_size;
++  std::vector<uint32_t> matching_code_bases;
++  matching_code_bases.reserve(module_tables_.size());
++  for (const auto& table : module_tables_) {
++    // The persistent executable is never an overlay recovery candidate.
++    if (table.code_base == entrypoint_code_base_) {
++      continue;
++    }
++    const uint64_t table_end = static_cast<uint64_t>(table.image_base) + table.image_size;
++    if (table.image_base < incoming_end && static_cast<uint64_t>(image_base) < table_end) {
++      matching_code_bases.push_back(table.code_base);
++    }
++  }
++
++  if (matching_code_bases.empty()) {
++    return {};
++  }
++
++  std::vector<std::pair<uint32_t, uint32_t>> cleared_ranges;
++  for (const uint32_t code_base : matching_code_bases) {
++    std::string module_id;
++    for (const auto& [id, reg] : module_addresses_) {
++      if (reg.code_base == code_base) {
++        module_id = id;
++        break;
++      }
++    }
++
++    if (!module_id.empty()) {
++      if (auto range = UnregisterModule(module_id)) {
++        cleared_ranges.push_back(*range);
++      }
++      continue;
++    }
++
++    auto table_it = std::find_if(module_tables_.begin(), module_tables_.end(),
++                                 [code_base](const ModuleTableInfo& table) {
++                                   return table.code_base == code_base;
++                                 });
++    if (table_it == module_tables_.end()) {
++      continue;
++    }
++
++    REXLOG_WARN(
++        "UnregisterModulesOverlappingImageRange: purging unregistered table at code={:08X}",
++        code_base);
++
++    const uint32_t table_start = table_it->code_base;
++    const uint32_t table_end = table_start + table_it->code_size;
++    const uint32_t pool_start = table_it->code_base + table_it->code_size;
++    const uint32_t pool_end = table_it->next_thunk_address;
++    for (uint32_t addr = table_it->code_base; addr < table_end; addr += 4) {
++      function_table_.erase(addr);
++      memory_->SetFunction(addr, nullptr);
++    }
++    for (uint32_t addr = pool_start; addr < pool_end; addr += 4) {
++      function_table_.erase(addr);
++      memory_->SetFunction(addr, nullptr);
++    }
++    cleared_ranges.emplace_back(table_start, pool_end);
++
++    if (table_it->code_base == entrypoint_code_base_) {
++      entrypoint_code_base_ = 0;
++    }
++    memory_->DestroyFunctionTable(code_base);
++    module_tables_.erase(table_it);
++  }
++
++  return cleared_ranges;
++}
++
+ }  // namespace rex::runtime
+diff --git a/src/system/kernel_state.cpp b/src/system/kernel_state.cpp
+index 697399c..585c677 100644
+--- a/src/system/kernel_state.cpp
++++ b/src/system/kernel_state.cpp
+@@ -10,11 +10,15 @@
+  */
+ 
+ #include <chrono>
++#include <cstdint>
+ #include <cstring>
+ #include <filesystem>
+ #include <string>
++#include <vector>
+ 
+ #include <fmt/format.h>
++#include <rex/filesystem.h>
++#include <rex/platform.h>
+ #include <rex/assert.h>
+ #include <rex/image_info.h>
+ #include <rex/logging.h>
+@@ -704,17 +708,24 @@ object_ref<UserModule> KernelState::LoadUserModule(const std::string_view raw_na
+     path = rex::string::utf8_join_guest_paths(
+         rex::string::utf8_find_base_guest_path(executable_module_->path()), name);
+   }
++  const std::string normalized_path = NormalizeGuestPath(path);
++
++  auto same_module_path = [](const std::string_view module_path, const std::string& normalized_target) {
++    const auto normalized_module_path = NormalizeGuestPath(module_path);
++    return normalized_module_path == normalized_target ||
++           rex::string::utf8_ends_with_case(normalized_module_path, normalized_target);
++  };
+ 
+   // loading_paths_ serializes concurrent loaders of the same path; we
+   // can't hold the global lock across LoadFromFile or DllMain ATTACH.
+   {
+     auto global_lock = global_critical_region_.Acquire();
+     for (auto& existing_module : user_modules_) {
+-      if (existing_module->path() == path) {
++      if (same_module_path(existing_module->path(), normalized_path)) {
+         return existing_module;
+       }
+     }
+-    auto [it, inserted] = loading_paths_.emplace(path);
++    auto [it, inserted] = loading_paths_.emplace(normalized_path);
+     (void)it;
+     if (!inserted) {
+       REXSYS_WARN("LoadUserModule: '{}' already being loaded by another thread", path);
+@@ -729,7 +740,7 @@ object_ref<UserModule> KernelState::LoadUserModule(const std::string_view raw_na
+       auto lock = ks->global_critical_region_.Acquire();
+       ks->loading_paths_.erase(key);
+     }
+-  } loading_guard{this, path};
++  } loading_guard{this, normalized_path};
+ 
+   auto module = object_ref<UserModule>(new UserModule(this));
+   X_STATUS status = module->LoadFromFile(path);
+@@ -741,25 +752,155 @@ object_ref<UserModule> KernelState::LoadUserModule(const std::string_view raw_na
+ 
+   module->Dump();
+ 
++  auto purge_overlapping_dispatch_tables = [&](uint32_t incoming_image_base,
++                                              uint32_t incoming_image_size) {
++    auto cleared_ranges =
++        function_dispatcher_->UnregisterModulesOverlappingImageRange(incoming_image_base,
++                                                                     incoming_image_size);
++    if (cleared_ranges.empty()) {
++      return;
++    }
++
++    auto global_lock = global_critical_region_.Acquire();
++    for (const auto& [pool_start, pool_end] : cleared_ranges) {
++      for (auto& km : kernel_modules_) {
++        km->InvalidateThunkCacheInRange(pool_start, pool_end);
++      }
++    }
++    REXSYS_WARN(
++        "LoadUserModule: purged {} stale function-table range(s) before loading '{}'",
++        cleared_ranges.size(), path);
++  };
++
++  // Avoid stale table-overlap failures when the title hot-swaps one DLL against another
++  // with the same (or overlapping) preferred image base. We unload any already-loaded
++  // module that overlaps the new module's image range before attempting to wire recompiled
++  // code for the incoming module.
++  auto maybe_unload_overlap = [&]() {
++    auto* incoming_xex = module->xex_module();
++    if (!incoming_xex) {
++      return;
++    }
++
++    const uint32_t incoming_image_base = incoming_xex->base_address();
++    const uint32_t incoming_image_size = incoming_xex->image_size();
++    if (incoming_image_size == 0) {
++      return;
++    }
++
++    purge_overlapping_dispatch_tables(incoming_image_base, incoming_image_size);
++
++    auto ranges_overlap = [](uint32_t a_base, uint32_t a_size, uint32_t b_base, uint32_t b_size) {
++      if (a_size == 0 || b_size == 0) {
++        return false;
++      }
++      const uint64_t a_end = static_cast<uint64_t>(a_base) + a_size;
++      const uint64_t b_end = static_cast<uint64_t>(b_base) + b_size;
++      return static_cast<uint64_t>(a_base) < b_end && static_cast<uint64_t>(b_base) < a_end;
++    };
++
++    std::vector<object_ref<UserModule>> overlapping_modules;
++    {
++      auto global_lock = global_critical_region_.Acquire();
++      for (auto& existing_module : user_modules_) {
++        if (existing_module.get() == executable_module_.get()) {
++          continue;
++        }
++        if (same_module_path(existing_module->path(), normalized_path)) {
++          continue;
++        }
++        auto* existing_xex = existing_module->xex_module();
++        if (!existing_xex) {
++          continue;
++        }
++        if (ranges_overlap(existing_xex->base_address(), existing_xex->image_size(),
++                           incoming_image_base, incoming_image_size)) {
++          overlapping_modules.push_back(existing_module);
++        }
++      }
++    }
++
++    for (auto& existing_module : overlapping_modules) {
++      REXSYS_WARN(
++          "LoadUserModule: unloading overlapping module '{}' before loading '{}'",
++          existing_module->path(), path);
++      UnloadUserModule(existing_module, /*call_entry=*/false);
++    }
++  };
++  maybe_unload_overlap();
++
+   // Wire recompiled code (if any) before publishing to user_modules_, so a
+   // failure in this block leaves no half-loaded entry behind.
+   auto recomp = FindRecompiledModule(path);
+   bool wired_recomp = false;
+   if (recomp && !recomp->shared_lib_name.empty()) {
+     const std::string& lib_key = recomp->guest_path;
++    const std::string normalized_lib_key = NormalizeGuestPath(lib_key);
++    bool duplicate_library = false;
+ 
+     {
+       auto global_lock = global_critical_region_.Acquire();
+       auto [lib_it, inserted] = module_libraries_.emplace(lib_key, rex::platform::DynamicLibrary{});
++      duplicate_library = !inserted;
+       if (!inserted) {
+-        REXSYS_ERROR("Recompiled module '{}' already loaded; refusing duplicate load", lib_key);
+-        object_table()->ReleaseHandle(module->handle());
+-        return nullptr;
++        REXSYS_WARN("Recompiled module '{}' already loaded; attempting recovery unload",
++                    lib_key);
++      }
++    }
++
++    if (duplicate_library) {
++      std::vector<object_ref<UserModule>> stale_modules;
++      {
++        auto global_lock = global_critical_region_.Acquire();
++        for (const auto& existing_module : user_modules_) {
++          if (same_module_path(existing_module->path(), normalized_lib_key)) {
++            stale_modules.push_back(existing_module);
++          }
++        }
++      }
++
++      for (auto& existing_module : stale_modules) {
++        REXSYS_WARN("LoadUserModule: unloading stale recompiled module '{}' before reloading",
++                    existing_module->path());
++        UnloadUserModule(existing_module, /*call_entry=*/false);
++      }
++
++      {
++        auto global_lock = global_critical_region_.Acquire();
++        auto lib_it = module_libraries_.find(lib_key);
++        if (lib_it != module_libraries_.end()) {
++          deferred_unload_libraries_.push_back(std::move(lib_it->second));
++          module_libraries_.erase(lib_it);
++        }
++
++        auto [_, inserted] = module_libraries_.emplace(lib_key, rex::platform::DynamicLibrary{});
++        if (!inserted) {
++          REXSYS_ERROR("Recompiled module '{}' already loaded after recovery attempt; aborting",
++                       lib_key);
++          object_table()->ReleaseHandle(module->handle());
++          return nullptr;
++        }
+       }
+     }
+ 
+     rex::platform::DynamicLibrary library_local;
+-    if (!library_local.Load(std::filesystem::path(recomp->shared_lib_name),
++    // Local fix (futari15): shared_lib_name is a bare module name
++    // ("futari15_reco_normal"). Resolve it to the colocated shared library
++    // with platform filename rules; a bare dlopen() never searches the
++    // executable folder on macOS/Linux (works on Windows by DLL-search luck).
++    std::filesystem::path lib_path(recomp->shared_lib_name);
++    if (lib_path.parent_path().empty() && !lib_path.has_extension()) {
++      std::string file_name(recomp->shared_lib_name);
++#if REX_PLATFORM_WIN32
++      file_name += ".dll";
++#elif REX_PLATFORM_MAC
++      file_name = "lib" + file_name + ".dylib";
++#else
++      file_name = "lib" + file_name + ".so";
++#endif
++      lib_path = rex::filesystem::GetExecutableFolder() / file_name;
++    }
++    if (!library_local.Load(lib_path,
+                             rex::platform::SymbolResolution::kImmediate)) {
+       REXSYS_ERROR("Failed to load shared library for module '{}'", recomp->pe_name);
+     } else {
+@@ -836,6 +977,17 @@ object_ref<UserModule> KernelState::LoadUserModule(const std::string_view raw_na
+ }
+ 
+ void KernelState::UnloadUserModule(const object_ref<UserModule>& module, bool call_entry) {
++  // A delayed unload must not detach or unregister an object's replacement.
++  // Paths and preferred addresses can be reused across module lifetimes.
++  {
++    auto global_lock = global_critical_region_.Acquire();
++    const auto active = std::find_if(user_modules_.begin(), user_modules_.end(),
++                                    [&module](const auto& e) { return e.get() == module.get(); });
++    if (active == user_modules_.end()) {
++      REXSYS_WARN("UnloadUserModule: ignoring inactive module '{}'", module->path());
++      return;
++    }
++  }
+   // Run guest DllMain DETACH outside the global lock to avoid deadlock with
+   // subsystem mutexes acquired from inside the guest callback.
+   if (module->is_dll_module() && module->entry_point() && call_entry) {
+@@ -853,6 +1005,29 @@ void KernelState::UnloadUserModule(const object_ref<UserModule>& module, bool ca
+   {
+     auto global_lock = global_critical_region_.Acquire();
+ 
++    const std::string normalized_path = NormalizeGuestPath(module->path());
++    auto erase_matching_recompiled_library = [&](const std::string& path_to_match) {
++      if (path_to_match.empty()) {
++        return false;
++      }
++
++      const std::string normalized_match = NormalizeGuestPath(path_to_match);
++      bool erased = false;
++      for (auto it = module_libraries_.begin(); it != module_libraries_.end();) {
++        const auto normalized_key = NormalizeGuestPath(it->first);
++        if (normalized_key == normalized_match ||
++            rex::string::utf8_ends_with_case(normalized_key, normalized_match)) {
++          deferred_unload_libraries_.push_back(std::move(it->second));
++          it = module_libraries_.erase(it);
++          erased = true;
++          continue;
++        }
++
++        ++it;
++      }
++      return erased;
++    };
++
+     auto recomp = FindRecompiledModule(module->path());
+     if (recomp) {
+       const std::string& key = recomp->guest_path;
+@@ -861,19 +1036,46 @@ void KernelState::UnloadUserModule(const object_ref<UserModule>& module, bool ca
+         for (auto& km : kernel_modules_) {
+           km->InvalidateThunkCacheInRange(cleared_range->first, cleared_range->second);
+         }
++      } else {
++        auto* xex = module->xex_module();
++        if (xex && xex->image_size() != 0) {
++          auto cleared_ranges =
++              function_dispatcher_->UnregisterModulesOverlappingImageRange(xex->base_address(),
++                                                                           xex->image_size());
++          for (const auto& [pool_start, pool_end] : cleared_ranges) {
++            for (auto& km : kernel_modules_) {
++              km->InvalidateThunkCacheInRange(pool_start, pool_end);
++            }
++          }
++        }
+       }
+ 
+       if (!recomp->shared_lib_name.empty()) {
+-        auto lib_it = module_libraries_.find(key);
+-        if (lib_it != module_libraries_.end()) {
+-          deferred_unload_libraries_.push_back(std::move(lib_it->second));
+-          module_libraries_.erase(lib_it);
++        bool erased = erase_matching_recompiled_library(key);
++        if (!erased) {
++          erase_matching_recompiled_library(normalized_path);
++        }
++      }
++    }
++    if (!recomp && !normalized_path.empty()) {
++      erase_matching_recompiled_library(normalized_path);
++    }
++    if (!recomp) {
++      auto* xex = module->xex_module();
++      if (xex && xex->image_size() != 0) {
++        auto cleared_ranges =
++            function_dispatcher_->UnregisterModulesOverlappingImageRange(xex->base_address(),
++                                                                         xex->image_size());
++        for (const auto& [pool_start, pool_end] : cleared_ranges) {
++          for (auto& km : kernel_modules_) {
++            km->InvalidateThunkCacheInRange(pool_start, pool_end);
++          }
+         }
+       }
+     }
+ 
+     auto iter = std::find_if(user_modules_.begin(), user_modules_.end(),
+-                             [&module](const auto& e) { return e->path() == module->path(); });
++                             [&module](const auto& e) { return e.get() == module.get(); });
+     if (iter != user_modules_.end()) {
+       user_modules_.erase(iter);
+       found_module = true;
+@@ -914,10 +1116,31 @@ void KernelState::RegisterRecompiledModule(const char* pe_name, const char* gues
+ std::optional<KernelState::RecompiledModuleInfo> KernelState::FindRecompiledModule(
+     std::string_view guest_path) {
+   auto global_lock = global_critical_region_.Acquire();
+-  auto normalized = NormalizeGuestPath(guest_path);
++  const std::string normalized_path = NormalizeGuestPath(guest_path);
++  const auto normalized_name = rex::string::utf8_find_name_from_guest_path(normalized_path);
++  std::optional<KernelState::RecompiledModuleInfo> name_match;
++
+   for (const auto& info : recompiled_modules_) {
+-    if (info.guest_path == normalized)
++    if (info.guest_path.empty()) {
++      continue;
++    }
++
++    if (info.guest_path == normalized_path ||
++        rex::string::utf8_ends_with_case(normalized_path, info.guest_path)) {
+       return info;
++    }
++
++    if (!normalized_name.empty() &&
++        rex::string::utf8_find_name_from_guest_path(info.guest_path) == normalized_name) {
++      if (name_match.has_value() && (name_match->guest_path != info.guest_path)) {
++        return std::nullopt;
++      }
++      name_match = info;
++    }
++  }
++
++  if (name_match.has_value()) {
++    return name_match;
+   }
+   return std::nullopt;
+ }
+diff --git a/tests/unit/CMakeLists.txt b/tests/unit/CMakeLists.txt
+index 7bd264b..3137d3b 100644
+--- a/tests/unit/CMakeLists.txt
++++ b/tests/unit/CMakeLists.txt
+@@ -1,5 +1,18 @@
+ # Unit Tests for ReXGlue core components
+ 
++# Keep overlay lifecycle checks runnable without unrelated codegen/UI tests.
++add_executable(dispatcher_tests
++    test_memory.cpp
++    system/function_dispatcher_test.cpp
++)
++target_include_directories(dispatcher_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
++target_link_libraries(dispatcher_tests PRIVATE rexruntime Catch2::Catch2WithMain)
++target_compile_options(dispatcher_tests PRIVATE
++    -UTRACY_ENABLE -UREXGLUE_ENABLE_PROFILING -UREXGLUE_ENABLE_PERF_COUNTERS
++    -UREXGLUE_PROFILE_GUEST_FUNCTIONS)
++set_target_properties(dispatcher_tests PROPERTIES
++    RUNTIME_OUTPUT_DIRECTORY $<TARGET_FILE_DIR:rexruntime>)
++
+ add_executable(unit_tests
+     test_memory.cpp
+     memory/heap_allocation_test.cpp
+@@ -36,6 +49,7 @@ target_link_libraries(unit_tests PRIVATE
+     rexcodegen
+     rexruntime
+     Catch2::Catch2WithMain
++    xxhash
+ )
+ 
+ # ReXApp is shipped as source for recomp projects, rather than compiled into
+diff --git a/tests/unit/system/function_dispatcher_test.cpp b/tests/unit/system/function_dispatcher_test.cpp
+index 88617f2..bd03dce 100644
+--- a/tests/unit/system/function_dispatcher_test.cpp
++++ b/tests/unit/system/function_dispatcher_test.cpp
+@@ -154,7 +154,7 @@ TEST_CASE("FunctionDispatcher: UnregisterModule clears pool and slots", "[runtim
+ 
+   auto cleared = dispatcher.UnregisterModule("modA");
+   REQUIRE(cleared.has_value());
+-  CHECK(cleared->first == kRegisterModBase + kCodeSize);
++  CHECK(cleared->first == kRegisterModBase);
+   CHECK(cleared->second == thunk + 4);
+   CHECK(dispatcher.GetFunction(kRegisterModBase + 0x10) == nullptr);
+   CHECK(dispatcher.GetFunction(thunk) == nullptr);
+@@ -175,6 +175,62 @@ TEST_CASE("FunctionDispatcher: UnregisterModule on unknown id returns nullopt",
+   CHECK_FALSE(dispatcher.UnregisterModule("nope").has_value());
+ }
+ 
++TEST_CASE("FunctionDispatcher: overlapping recovery preserves the executable",
++          "[runtime][dispatcher][overlay]") {
++  auto& memory = GetTestMemory();
++  rex::runtime::ExportResolver resolver;
++  rex::runtime::FunctionDispatcher dispatcher(&memory, &resolver);
++  constexpr uint32_t base = 0x8A000000;
++  REQUIRE(dispatcher.InitializeFunctionTable(base, 0x10000, base, 0x100000, true));
++  REQUIRE(dispatcher.SetFunction(base + 4, &DummyFn));
++  CHECK(dispatcher.UnregisterModulesOverlappingImageRange(base, 0x100000).empty());
++  CHECK(dispatcher.GetFunction(base + 4) == &DummyFn);
++  CHECK(dispatcher.AllocateThunk(&DummyFn, 0) == base + 0x10000);
++  CHECK_FALSE(dispatcher.InitializeFunctionTable(base, 0x10000, base, 0x100000));
++}
++
++TEST_CASE("FunctionDispatcher: same image A B A clears callbacks and thunks",
++          "[runtime][dispatcher][overlay]") {
++  auto& memory = GetTestMemory();
++  rex::runtime::ExportResolver resolver;
++  rex::runtime::FunctionDispatcher dispatcher(&memory, &resolver);
++  constexpr uint32_t base = 0x8B000000;
++  for (int pass = 0; pass < 6; ++pass) {
++    const uint32_t code = base + (pass % 2 ? 0x20000 : 0x10000);
++    const uint32_t size = pass % 2 ? 0x18000 : 0x10000;
++    REQUIRE(dispatcher.InitializeFunctionTable(code, size, base, 0x100000));
++    dispatcher.RegisterModule(pass % 2 ? "overlayB" : "overlayA", code,
++                              +[](rex::runtime::IModuleRegistrar*) {});
++    // A late callback wasn't part of the registration recording.
++    REQUIRE(dispatcher.SetFunction(code + 8, &DummyFn));
++    const auto thunk = dispatcher.AllocateThunk(&DummyFn, code + 8);
++    REQUIRE(thunk != 0);
++    auto cleared = dispatcher.UnregisterModulesOverlappingImageRange(base, 0x100000);
++    REQUIRE(cleared.size() == 1);
++    CHECK(cleared[0].first == code);
++    CHECK(cleared[0].second == thunk + 4);
++    CHECK(dispatcher.GetFunction(code + 8) == nullptr);
++    CHECK(dispatcher.GetFunction(thunk) == nullptr);
++    CHECK_FALSE(dispatcher.HasAnyFunctionTable());
++  }
++}
++
++TEST_CASE("FunctionDispatcher: orphan table recovery is bounded to overlap",
++          "[runtime][dispatcher][overlay]") {
++  auto& memory = GetTestMemory();
++  rex::runtime::ExportResolver resolver;
++  rex::runtime::FunctionDispatcher dispatcher(&memory, &resolver);
++  constexpr uint32_t base = 0x8C000000;
++  REQUIRE(dispatcher.InitializeFunctionTable(base, 0x10000, base, 0x100000));
++  REQUIRE(dispatcher.SetFunction(base + 4, &DummyFn));
++  CHECK(dispatcher.UnregisterModulesOverlappingImageRange(base, 0).empty());
++  CHECK(dispatcher.UnregisterModulesOverlappingImageRange(base + 0x100000, 4).empty());
++  CHECK(dispatcher.GetFunction(base + 4) == &DummyFn);
++  REQUIRE(dispatcher.UnregisterModulesOverlappingImageRange(base, 4).size() == 1);
++  CHECK(dispatcher.GetFunction(base + 4) == nullptr);
++  CHECK_FALSE(dispatcher.HasAnyFunctionTable());
++}
++
+ namespace {
+ 
+ void ScribbleFn(PPCContext& ctx, uint8_t*) {
+diff --git a/thirdparty/moltenvk b/thirdparty/moltenvk
+index db445ff..db66022 160000
+--- a/thirdparty/moltenvk
++++ b/thirdparty/moltenvk
+@@ -1 +1 @@
+-Subproject commit db445ff2042d9ce348c439ad8451112f354b8d2a
++Subproject commit db66022459ffb663aa2b50f6b018bc2e124f5edf
