@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "supported_revision": "futari-ver-1.5-xex-set-2026-10-13",
+  "files_sha256": {
+    "default.xex": "6e61934468463c8d023588a1e14b2269002dec6987b51538154843ea6869a434",
+    "reco_normal.xex": "cf13982ed0af96769a432666604322a759e4247a46e40259c575036925e38fcf",
+    "reco_abnormal.xex": "c55f633ff8e1cba140279f4ab0d6bb7389a2151ef80d0da3245a8d1dd068e754",
+    "palm_normal.xex": "b8857eeb0a814a550176746d2dfc05d3d9c5866ab05a2716911dbbdf49ec73d6",
+    "palm_abnormal.xex": "e37ec86e0d2c2f176a6c9dc4486e982235008628bd4765e33fc717c95da34222",
+    "kiniro_normal.xex": "8d1df7da086e7ce36e804cef43bf5afadaa5e66f7196a54bb2757be535c3681c",
+    "kiniro_abnormal.xex": "da3ab8cb8edb287a10866ad262b7bc5ceeacd431044d59bdf0b85067a5792f20",
+    "hirow_normal.xex": "9c3c9d8b56709c0b50a3953fcc8d42ea950f5cb05f9339cc68a197e643cc3bd4",
+    "hirow_abnormal.xex": "92ee27efd7e6c0ed4e4ea086fe53ac015bb018be658c0689dfd771936ff39050"
+  },
+  "entrypoint_functions": [
+    "0x8210B038", "0x820F3C20", "0x821CB190", "0x82061D60", "0x82061D70", "0x82061D80",
+    "0x82063A58", "0x82065A88", "0x82065A98", "0x82065AA8", "0x82065AB8", "0x82066048",
+    "0x820662B8", "0x820662C8", "0x820662D8", "0x82068808", "0x82068818", "0x82068828",
+    "0x82068838", "0x820E8020", "0x820EDF48", "0x8210E074", "0x82118178", "0x821195C4",
+    "0x8211960C", "0x821196D4", "0x82119724", "0x8211EA54", "0x821384D8", "0x821384E4",
+    "0x8214EBD4", "0x8214EC34", "0x82169C08", "0x821A9ADC", "0x821AC4FC", "0x821BE398",
+    "0x8207C528", "0x8210E770", "0x8210E778", "0x8210E780", "0x8210E790", "0x8210E798",
+    "0x8210E7A0", "0x82113468", "0x82113470", "0x82113478", "0x82113480", "0x82113488",
+    "0x82113498", "0x821134A0", "0x821134A8", "0x82113720", "0x82113730", "0x82113738",
+    "0x82113DF0", "0x82118D40"
+  ],
+  "modules": [
+    {
+      "file": "reco_normal.xex", "out_directory_path": "generated/reco_normal",
+      "functions": ["0x8809ECA0", "0x8809F7A8", "0x880B9C98", "0x881E4E80", "0x881B0038", "0x881B5C28", "0x881C2FD0", "0x880B1020", "0x8817D190", "0x880737F8", "0x8808E780", "0x880A4DB0"],
+      "switch_tables": [{"address": 2282670204, "register": 11, "labels": [2282670260, 2282670288, 2282670336, 2282670420, 2282670476, 2282670488, 2282671016, 2282671236, 2282671300, 2282671388]}]
+    },
+    {
+      "file": "reco_abnormal.xex", "out_directory_path": "generated/reco_abnormal",
+      "functions": ["0x8809ECA0", "0x8809F7A8", "0x880B9C98", "0x881E4E88", "0x881B0040", "0x881B5C30", "0x881C2FD8", "0x880B1020", "0x8817D198", "0x880737F8", "0x880A4DB0", "0x8808E780"],
+      "switch_tables": [{"address": 2282670212, "register": 11, "labels": [2282670268, 2282670296, 2282670344, 2282670428, 2282670484, 2282670496, 2282671024, 2282671244, 2282671308, 2282671396]}]
+    },
+    {
+      "file": "palm_normal.xex", "out_directory_path": "generated/palm_normal",
+      "functions": ["0x8809E980", "0x8809F470", "0x880B9770", "0x881E7200", "0x881B2978", "0x881B83D0", "0x881C5530", "0x880A49B0", "0x880B0B48", "0x88180500", "0x88073808", "0x8808E728", "0x881E8F28"],
+      "switch_tables": [{"address": 2282667180, "register": 11, "labels": [2282667236, 2282667296, 2282667344, 2282667428, 2282667484, 2282667496, 2282668256, 2282668476, 2282668540, 2282668628]}]
+    },
+    {
+      "file": "palm_abnormal.xex", "out_directory_path": "generated/palm_abnormal",
+      "functions": ["0x880AD710", "0x880BC218", "0x88199C60", "0x8819F800", "0x881AD270", "0x880ABF30", "0x880B1648", "0x88154EF0", "0x88161450", "0x880837F8", "0x8809E798"],
+      "switch_tables": [{"address": 2282608564, "register": 11, "labels": [2282608620, 2282608648, 2282608696, 2282608780, 2282608836, 2282608848, 2282609376, 2282609596, 2282609660, 2282609748]}]
+    },
+    {
+      "file": "kiniro_normal.xex", "out_directory_path": "generated/kiniro_normal",
+      "functions": ["0x880BC918", "0x881E4CD8", "0x881AFB08", "0x881B5708", "0x881C2938", "0x880A7AA0", "0x880B3CA0", "0x8817D360", "0x880737F8", "0x8808E710"],
+      "switch_tables": [{"address": 2282680520, "register": 11, "labels": [2282680576, 2282680604, 2282680652, 2282680736, 2282680792, 2282680804, 2282681408, 2282681628, 2282681692, 2282681780]}]
+    },
+    {
+      "file": "kiniro_abnormal.xex", "out_directory_path": "generated/kiniro_abnormal",
+      "functions": ["0x880BC918", "0x881E4CE0", "0x881AFB10", "0x881B5710", "0x881C2940", "0x880A7AA0", "0x880B3CA0", "0x8817D368", "0x880737F8", "0x8808E710"],
+      "switch_tables": [{"address": 2282680528, "register": 11, "labels": [2282680584, 2282680612, 2282680660, 2282680744, 2282680800, 2282680812, 2282681416, 2282681636, 2282681700, 2282681788]}]
+    },
+    {
+      "file": "hirow_normal.xex", "out_directory_path": "generated/hirow_normal",
+      "functions": ["0x8809E718", "0x8809F220", "0x880B9548", "0x881E2018", "0x881AC928", "0x881C0200", "0x880A4740", "0x880B08D0", "0x88179D88", "0x88073808", "0x8808E560"],
+      "switch_tables": [{"address": 2282667180, "register": 11, "labels": [2282667236, 2282667264, 2282667312, 2282667396, 2282667452, 2282667464, 2282667992, 2282668212, 2282668276, 2282668364]}]
+    },
+    {
+      "file": "hirow_abnormal.xex", "out_directory_path": "generated/hirow_abnormal",
+      "functions": ["0x8809E718", "0x8809F220", "0x880B9548", "0x881E2020", "0x881AC930", "0x881C0208", "0x880A4740", "0x880B08D0", "0x88179D90", "0x88073808", "0x8808E560"],
+      "switch_tables": [{"address": 2282667188, "register": 11, "labels": [2282667244, 2282667272, 2282667320, 2282667404, 2282667460, 2282667472, 2282668000, 2282668220, 2282668284, 2282668372]}]
+    }
+  ]
+}

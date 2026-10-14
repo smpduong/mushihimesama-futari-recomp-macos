@@ -1,7 +1,7 @@
 # Third-party notices
 
-The SDK patch and the included SDK source fragments derive from the ReXGlue
-SDK, whose BSD-3-Clause license is reproduced in
+The SDK patch, the ReXGlue CMake integration template, and the included SDK
+source fragments derive from the ReXGlue SDK, whose BSD-3-Clause license is reproduced in
 `patches/rexglue-sdk-LICENSE.txt`. The patch targets ReXGlue commit
 `c94f5ebdcb3c9d1a460ca48e04f9758448f8d518` and records a MoltenVK override at
 `db66022459ffb663aa2b50f6b018bc2e124f5edf`.

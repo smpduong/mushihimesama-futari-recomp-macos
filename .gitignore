@@ -16,7 +16,18 @@
 !/patches/README.md
 !/patches/rexglue-sdk-LICENSE.txt
 !/patches/rexglue-sdk-local.patch
+!/patches/rexglue-sdk-current.patch
 !/patches/sdk-submodules.txt
+!/config/
+/config/*
+!/config/futari15x360.json
+!/templates/
+/templates/*
+!/templates/futari15-x360/
+/templates/futari15-x360/*
+!/templates/futari15-x360/CMakeLists.txt
+!/templates/futari15-x360/main.cpp
+!/templates/futari15-x360/rexglue.cmake
 !/game-work/
 /game-work/*
 !/game-work/futari15-x360/
@@ -44,6 +55,7 @@
 !/scripts/
 /scripts/*
 !/scripts/futari.py
+!/scripts/build_from_game.py
 !/scripts/install_dlc_via_runtime.py
 !/scripts/package_launcher.mm
 !/scripts/package_launcher_ui.inc
@@ -70,6 +82,7 @@
 !/scripts/libarchive_api_subset.h
 !/scripts/check_public_tree.py
 !/scripts/test_public_source_hygiene.py
+!/scripts/test_build_from_game.py
 !/.github/
 /.github/*
 !/.github/ISSUE_TEMPLATE/
@@ -79,8 +92,8 @@
 /.github/workflows/*
 !/.github/workflows/source-hygiene.yml
 
-# Ignore rules are a convenience for normal adds; the exact-tree guard also
-# rejects any unreviewed path, including one added with force.
+# Ignore rules are a convenience for normal adds; the exact-tree guard rejects
+# unreviewed paths even when they are force-added.
 **/.DS_Store
 **/__pycache__/
 *.py[cod]
