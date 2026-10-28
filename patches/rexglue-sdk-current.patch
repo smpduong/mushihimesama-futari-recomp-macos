@@ -68,7 +68,7 @@ index c2c4fd45ed1cc1abc130f6ef3dc17645a9ff7e5a..b02f018ba5c763be704023cb947a1f36
    static constexpr u32 ExceptionMask = (1 << 8) |   // IOE - Invalid Operation
                                         (1 << 9) |   // DZE - Division by Zero
 diff --git a/include/rex/ppc/context.h b/include/rex/ppc/context.h
-index 0ede54262059bff41c8c1f5047602fe406d68e03..9d996cf32807d602bb3943e71608846c832a314a 100644
+index 0ede54262059bff41c8c1f5047602fe406d68e03..4a95dfeb682dc0c6535196677530d15ac124c034 100644
 --- a/include/rex/ppc/context.h
 +++ b/include/rex/ppc/context.h
 @@ -146,8 +146,9 @@ constexpr uint32_t kRoundMask = 0x03;
@@ -83,7 +83,7 @@ index 0ede54262059bff41c8c1f5047602fe406d68e03..9d996cf32807d602bb3943e71608846c
  
    using Platform = platform::FPSCRPlatform;
    static constexpr size_t RoundShift = Platform::RoundShift;
-@@ -166,12 +167,19 @@ struct FPSCRRegister {
+@@ -166,12 +167,38 @@ struct FPSCRRegister {
      setcsr(csr);
    }
  
@@ -97,14 +97,33 @@ index 0ede54262059bff41c8c1f5047602fe406d68e03..9d996cf32807d602bb3943e71608846c
 -    return HostToGuest[(csr & RoundMaskVal) >> RoundShift];
 +    return (guest & ~kRoundMask) |
 +           uint32_t(Platform::HostToGuest[(csr & RoundMaskVal) >> RoundShift]);
++  }
++
++  // FPSCR bits (Book I): summaries FEX and VX, the invalid-operation causes that
++  // VX summarizes, and reserved bit 20.
++  static constexpr uint32_t kFEX = 0x40000000;
++  static constexpr uint32_t kVX = 0x20000000;
++  static constexpr uint32_t kVXCauses = 0x01F80700;
++  static constexpr uint32_t kReserved = 0x00000800;
++
++  // mtfsf cannot set FEX or VX directly; both are derived from the other bits.
++  static constexpr uint32_t deriveSummaryBits(uint32_t value) noexcept {
++    value &= ~(kFEX | kVX | kReserved);
++    if (value & kVXCauses)
++      value |= kVX;
++    // VX, OX, UX, ZX, XX (bits 2-6) line up with VE, OE, UE, ZE, XE (bits 24-28).
++    if ((value >> 22) & value & 0xF8)
++      value |= kFEX;
++    return value;
    }
  
    inline void storeFromGuest(uint32_t value) noexcept {
++    value = deriveSummaryBits(value);
 +    guest = value;
      csr &= ~RoundMaskVal;
      csr |= Platform::GuestToHost[value & kRoundMask];
      setcsr(csr);
-@@ -442,7 +450,7 @@ struct alignas(0x40) PPCContext {
+@@ -442,7 +469,7 @@ struct alignas(0x40) PPCContext {
  
    //--- Non-volatile register save/restore --------
    // Layout: r14-r31 (144) | f14-f31 (144) | v14-v31 (288) | v64-v127 (1024)
@@ -113,7 +132,7 @@ index 0ede54262059bff41c8c1f5047602fe406d68e03..9d996cf32807d602bb3943e71608846c
    static constexpr size_t kNonVolatileSaveSize =
        18 * sizeof(PPCRegister) + 18 * sizeof(PPCRegister) + 18 * sizeof(PPCVRegister) +
        64 * sizeof(PPCVRegister) + 3 * sizeof(PPCCRRegister) + sizeof(PPCFPSCRRegister);
-@@ -474,6 +482,6 @@ struct alignas(0x40) PPCContext {
+@@ -474,6 +501,6 @@ struct alignas(0x40) PPCContext {
      src += 3 * sizeof(PPCCRRegister);
      PPCFPSCRRegister saved_fpscr;
      std::memcpy(&saved_fpscr, src, sizeof(PPCFPSCRRegister));
@@ -224,6 +243,56 @@ index 866943be102014bb85a1d4cb30b4167c9c42f61c..1fdfbf465cae9714110cad2b1443ab44
 +  uint32_t exhaustion_result_ = X_ERROR_NO_MORE_FILES;
    std::vector<uint8_t> buffer_;
  };
+ 
+diff --git a/src/codegen/builders/floating_point.cpp b/src/codegen/builders/floating_point.cpp
+index 170224164084692e93d674259dbf215c82cd3e21..bf13e770fdb72897cefa57e3d0eb4ee4044ab4d8 100644
+--- a/src/codegen/builders/floating_point.cpp
++++ b/src/codegen/builders/floating_point.cpp
+@@ -207,7 +207,7 @@ bool build_fmadd(BuilderContext& ctx) {
+ 
+ bool build_fmadds(BuilderContext& ctx) {
+   ctx.emit_set_flush_mode(false);
+-  ctx.println("\t{}.f64 = double(float(std::fma({}.f64, {}.f64, {}.f64)));",
++  ctx.println("\t{}.f64 = double(std::fmaf(float({}.f64), float({}.f64), float({}.f64)));",
+               ctx.f(ctx.insn.operands[0]), ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]),
+               ctx.f(ctx.insn.operands[3]));
+   return true;
+@@ -223,7 +223,7 @@ bool build_fmsub(BuilderContext& ctx) {
+ 
+ bool build_fmsubs(BuilderContext& ctx) {
+   ctx.emit_set_flush_mode(false);
+-  ctx.println("\t{}.f64 = double(float(std::fma({}.f64, {}.f64, -{}.f64)));",
++  ctx.println("\t{}.f64 = double(std::fmaf(float({}.f64), float({}.f64), -float({}.f64)));",
+               ctx.f(ctx.insn.operands[0]), ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]),
+               ctx.f(ctx.insn.operands[3]));
+   return true;
+@@ -239,9 +239,10 @@ bool build_fnmadd(BuilderContext& ctx) {
+ 
+ bool build_fnmadds(BuilderContext& ctx) {
+   ctx.emit_set_flush_mode(false);
+-  ctx.println("\t{}.f64 = double(float(-std::fma({}.f64, {}.f64, {}.f64)));",
+-              ctx.f(ctx.insn.operands[0]), ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]),
+-              ctx.f(ctx.insn.operands[3]));
++  ctx.println("\t{{ volatile float s_ = std::fmaf(float({}.f64), float({}.f64), float({}.f64)); "
++              "{}.f64 = double(-s_); }}",
++              ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]), ctx.f(ctx.insn.operands[3]),
++              ctx.f(ctx.insn.operands[0]));
+   return true;
+ }
+ 
+@@ -255,9 +256,10 @@ bool build_fnmsub(BuilderContext& ctx) {
+ 
+ bool build_fnmsubs(BuilderContext& ctx) {
+   ctx.emit_set_flush_mode(false);
+-  ctx.println("\t{}.f64 = double(float(-std::fma({}.f64, {}.f64, -{}.f64)));",
+-              ctx.f(ctx.insn.operands[0]), ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]),
+-              ctx.f(ctx.insn.operands[3]));
++  ctx.println("\t{{ volatile float s_ = std::fmaf(float({}.f64), float({}.f64), -float({}.f64)); "
++              "{}.f64 = double(-s_); }}",
++              ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]), ctx.f(ctx.insn.operands[3]),
++              ctx.f(ctx.insn.operands[0]));
+   return true;
+ }
  
 diff --git a/src/codegen/project_recompiler.cpp b/src/codegen/project_recompiler.cpp
 index 240bcb0cfe7480b671a5e4541a545bce318f8f3d..e367f4490a629c1ef6d03de39fddf4e0bee10bbc 100644
