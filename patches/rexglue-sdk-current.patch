@@ -41,6 +41,86 @@ index 9b3cdf564234b3f010407f7ff0226d0e28baf2b3..ea4f0786a7b4f13027967aa69065f254
  
  # Sanitizer support for debugging memory corruption and undefined behavior
  if(REXGLUE_ENABLE_SANITIZERS)
+diff --git a/include/rex/platform/fpscr.h b/include/rex/platform/fpscr.h
+index c2c4fd45ed1cc1abc130f6ef3dc17645a9ff7e5a..b02f018ba5c763be704023cb947a1f362b7b190b 100644
+--- a/include/rex/platform/fpscr.h
++++ b/include/rex/platform/fpscr.h
+@@ -40,6 +40,8 @@ struct FPSCRPlatform {
+                                        (1 << 12);   // PM - Precision (Inexact)
+   static constexpr size_t GuestToHost[] = {SIMDE_MM_ROUND_NEAREST, SIMDE_MM_ROUND_TOWARD_ZERO,
+                                            SIMDE_MM_ROUND_UP, SIMDE_MM_ROUND_DOWN};
++  // Inverse of GuestToHost, indexed by MXCSR.RC (Nearest, Down, Up, Zero).
++  static constexpr size_t HostToGuest[] = {0, 3, 2, 1};
+ 
+   static inline u32 getcsr() noexcept { return simde_mm_getcsr(); }
+ 
+@@ -58,9 +60,11 @@ struct FPSCRPlatform {
+   static constexpr size_t RoundMaskVal = 3 << RoundShift;
+   // FZ and FZ16
+   static constexpr size_t FlushMask = (1 << 19) | (1 << 24);
+-  // Nearest, Zero, -Infinity, -Infinity
++  // Indexed by guest RN: Nearest, Zero, +Infinity, -Infinity
+   static constexpr size_t GuestToHost[] = {0 << RoundShift, 3 << RoundShift, 1 << RoundShift,
+                                            2 << RoundShift};
++  // Inverse of GuestToHost, indexed by FPCR.RMode (Nearest, +Infinity, -Infinity, Zero).
++  static constexpr size_t HostToGuest[] = {0, 2, 3, 1};
+   // Exception enable bits (0 = exception disabled, ARM defaults to 0)
+   static constexpr u32 ExceptionMask = (1 << 8) |   // IOE - Invalid Operation
+                                        (1 << 9) |   // DZE - Division by Zero
+diff --git a/include/rex/ppc/context.h b/include/rex/ppc/context.h
+index 0ede54262059bff41c8c1f5047602fe406d68e03..9d996cf32807d602bb3943e71608846c832a314a 100644
+--- a/include/rex/ppc/context.h
++++ b/include/rex/ppc/context.h
+@@ -146,8 +146,9 @@ constexpr uint32_t kRoundMask = 0x03;
+ 
+ struct FPSCRRegister {
+   uint32_t csr;
+-
+-  static constexpr size_t HostToGuest[] = {kRoundNearest, kRoundDown, kRoundUp, kRoundTowardZero};
++  // Last FPSCR value the guest wrote. RN is always read live from the host; the
++  // other bits are only what mtfsf stored (FP status updates are not modeled).
++  uint32_t guest;
+ 
+   using Platform = platform::FPSCRPlatform;
+   static constexpr size_t RoundShift = Platform::RoundShift;
+@@ -166,12 +167,19 @@ struct FPSCRRegister {
+     setcsr(csr);
+   }
+ 
++  inline void restoreGuestBits(const FPSCRRegister& saved) noexcept {
++    guest = saved.guest;
++    restoreGuestBits(saved.csr);
++  }
++
+   inline uint32_t loadFromHost() noexcept {
+     csr = getcsr();
+-    return HostToGuest[(csr & RoundMaskVal) >> RoundShift];
++    return (guest & ~kRoundMask) |
++           uint32_t(Platform::HostToGuest[(csr & RoundMaskVal) >> RoundShift]);
+   }
+ 
+   inline void storeFromGuest(uint32_t value) noexcept {
++    guest = value;
+     csr &= ~RoundMaskVal;
+     csr |= Platform::GuestToHost[value & kRoundMask];
+     setcsr(csr);
+@@ -442,7 +450,7 @@ struct alignas(0x40) PPCContext {
+ 
+   //--- Non-volatile register save/restore --------
+   // Layout: r14-r31 (144) | f14-f31 (144) | v14-v31 (288) | v64-v127 (1024)
+-  //       | cr2-cr4 (12) | fpscr (4).  Total: 1616 bytes.
++  //       | cr2-cr4 (12) | fpscr (8).  Total: 1620 bytes.
+   static constexpr size_t kNonVolatileSaveSize =
+       18 * sizeof(PPCRegister) + 18 * sizeof(PPCRegister) + 18 * sizeof(PPCVRegister) +
+       64 * sizeof(PPCVRegister) + 3 * sizeof(PPCCRRegister) + sizeof(PPCFPSCRRegister);
+@@ -474,6 +482,6 @@ struct alignas(0x40) PPCContext {
+     src += 3 * sizeof(PPCCRRegister);
+     PPCFPSCRRegister saved_fpscr;
+     std::memcpy(&saved_fpscr, src, sizeof(PPCFPSCRRegister));
+-    fpscr.restoreGuestBits(saved_fpscr.csr);
++    fpscr.restoreGuestBits(saved_fpscr);
+   }
+ };
 diff --git a/include/rex/rex_app.h b/include/rex/rex_app.h
 index 1f524802ee642116261f190563b6246a3b6ede27..3ad7e027fc62e314529d9cc5d35c3cc79a8a9b04 100644
 --- a/include/rex/rex_app.h
@@ -258,9 +338,18 @@ index 1fb1e16a952e9737260805e1a9fc9cf90d30e74a..6a16f3e5bb436bf33acdc78d2d136c8a
    if (XFAILED(result)) {
      return result;
 diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
-index bd4310951d479706603e033b208b4cd16b0a486c..71c5a09cbed3d0c9f675e7c91a3c37d51760d48d 100644
+index bd4310951d479706603e033b208b4cd16b0a486c..b8df9cf93bc8b2bd831ff320699866d7c9c44326 100644
 --- a/src/system/function_dispatcher.cpp
 +++ b/src/system/function_dispatcher.cpp
+@@ -135,7 +135,7 @@ uint64_t FunctionDispatcher::ExecuteTrap(ThreadState* thread_state, uint32_t add
+   uint64_t result = Execute(thread_state, address, args, arg_count);
+ 
+   *ctx = saved;
+-  ctx->fpscr.restoreGuestBits(saved.fpscr.csr);
++  ctx->fpscr.restoreGuestBits(saved.fpscr);
+   return result;
+ }
+ 
 @@ -377,13 +377,19 @@ std::optional<std::pair<uint32_t, uint32_t>> FunctionDispatcher::UnregisterModul
  
    std::optional<std::pair<uint32_t, uint32_t>> cleared_range;
