@@ -2,7 +2,7 @@
 
 `rexglue-sdk-current.patch` is the reviewed source delta for the ReXGlue
 repository at `c94f5ebdcb3c9d1a460ca48e04f9758448f8d518`. Its SHA-256 is
-`06ec6439b921e0c8804fcfe777bc11e6dfb50ff96aa9e64c05cfee84d3514b17`. The
+`6dd730f12d7224b305dace04fab50fb3ba92dee983a51f1084af09f752034108`. The
 23 required submodule revisions, including the MoltenVK override, are listed
 in [`sdk-submodules.txt`](sdk-submodules.txt).
 

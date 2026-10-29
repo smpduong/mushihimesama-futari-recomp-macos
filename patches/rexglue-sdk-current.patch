@@ -245,52 +245,115 @@ index 866943be102014bb85a1d4cb30b4167c9c42f61c..1fdfbf465cae9714110cad2b1443ab44
  };
  
 diff --git a/src/codegen/builders/floating_point.cpp b/src/codegen/builders/floating_point.cpp
-index 170224164084692e93d674259dbf215c82cd3e21..bf13e770fdb72897cefa57e3d0eb4ee4044ab4d8 100644
+index 170224164084692e93d674259dbf215c82cd3e21..801ca92d50a19a2e573045ed3c2849ea1e0ce593 100644
 --- a/src/codegen/builders/floating_point.cpp
 +++ b/src/codegen/builders/floating_point.cpp
-@@ -207,7 +207,7 @@ bool build_fmadd(BuilderContext& ctx) {
+@@ -12,6 +12,8 @@
+ #include "builder_context.h"
+ #include "helpers.h"
  
- bool build_fmadds(BuilderContext& ctx) {
-   ctx.emit_set_flush_mode(false);
--  ctx.println("\t{}.f64 = double(float(std::fma({}.f64, {}.f64, {}.f64)));",
-+  ctx.println("\t{}.f64 = double(std::fmaf(float({}.f64), float({}.f64), float({}.f64)));",
-               ctx.f(ctx.insn.operands[0]), ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]),
-               ctx.f(ctx.insn.operands[3]));
-   return true;
-@@ -223,7 +223,7 @@ bool build_fmsub(BuilderContext& ctx) {
++#include <fmt/format.h>
++
+ namespace rex::codegen {
  
- bool build_fmsubs(BuilderContext& ctx) {
-   ctx.emit_set_flush_mode(false);
--  ctx.println("\t{}.f64 = double(float(std::fma({}.f64, {}.f64, -{}.f64)));",
-+  ctx.println("\t{}.f64 = double(std::fmaf(float({}.f64), float({}.f64), -float({}.f64)));",
-               ctx.f(ctx.insn.operands[0]), ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]),
-               ctx.f(ctx.insn.operands[3]));
-   return true;
-@@ -239,9 +239,10 @@ bool build_fnmadd(BuilderContext& ctx) {
+ //=============================================================================
+@@ -197,67 +199,67 @@ bool build_fdivs(BuilderContext& ctx) {
+ // Fused Multiply-Add
+ //=============================================================================
  
- bool build_fnmadds(BuilderContext& ctx) {
-   ctx.emit_set_flush_mode(false);
--  ctx.println("\t{}.f64 = double(float(-std::fma({}.f64, {}.f64, {}.f64)));",
--              ctx.f(ctx.insn.operands[0]), ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]),
++// Book I 4.3.2: if an operand is a NaN, the result is the first NaN of FRA, FRB, FRC
++// with its quiet bit set, and fnm* forms do not negate it. An invalid operation with
++// no NaN operand (inf*0, inf-inf) gives the default QNaN, also under fnm*.
++// `result` computes FRT from the locals a_ (FRA), b_ (FRB) and c_ (FRC). The fnm*
++// forms round first and then negate through a volatile; otherwise clang can select
++// FNMADD/FNMSUB, which round the negated value (wrong zero sign, RN 2 and 3).
++static void emit_fused(BuilderContext& ctx, std::string_view result) {
++  ctx.emit_set_flush_mode(false);
++  auto d = ctx.f(ctx.insn.operands[0]);
++  ctx.println("\t{{ const double a_ = {}.f64, b_ = {}.f64, c_ = {}.f64;", ctx.f(ctx.insn.operands[1]),
++              ctx.f(ctx.insn.operands[3]), ctx.f(ctx.insn.operands[2]));
++  ctx.println("\tif (std::isnan(a_) || std::isnan(b_) || std::isnan(c_)) {{");
++  ctx.println("\t\t{}.f64 = std::isnan(a_) ? a_ : std::isnan(b_) ? b_ : c_;", d);
++  ctx.println("\t\t{}.u64 |= 0x0008000000000000ull;", d);
++  ctx.println("\t}} else {{");
++  ctx.println("\t\t{}", fmt::format(fmt::runtime(result), d));
++  ctx.println("\t\tif (std::isnan({}.f64)) {}.u64 = 0x7FF8000000000000ull;", d, d);
++  ctx.println("\t}} }}");
++}
++
+ bool build_fmadd(BuilderContext& ctx) {
+-  ctx.emit_set_flush_mode(false);
+-  ctx.println("\t{}.f64 = std::fma({}.f64, {}.f64, {}.f64);", ctx.f(ctx.insn.operands[0]),
+-              ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]),
 -              ctx.f(ctx.insn.operands[3]));
-+  ctx.println("\t{{ volatile float s_ = std::fmaf(float({}.f64), float({}.f64), float({}.f64)); "
-+              "{}.f64 = double(-s_); }}",
-+              ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]), ctx.f(ctx.insn.operands[3]),
-+              ctx.f(ctx.insn.operands[0]));
++  emit_fused(ctx, "{}.f64 = std::fma(a_, c_, b_);");
    return true;
  }
  
-@@ -255,9 +256,10 @@ bool build_fnmsub(BuilderContext& ctx) {
+ bool build_fmadds(BuilderContext& ctx) {
+-  ctx.emit_set_flush_mode(false);
+-  ctx.println("\t{}.f64 = double(float(std::fma({}.f64, {}.f64, {}.f64)));",
+-              ctx.f(ctx.insn.operands[0]), ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]),
+-              ctx.f(ctx.insn.operands[3]));
++  emit_fused(ctx, "{}.f64 = double(std::fmaf(float(a_), float(c_), float(b_)));");
+   return true;
+ }
+ 
+ bool build_fmsub(BuilderContext& ctx) {
+-  ctx.emit_set_flush_mode(false);
+-  ctx.println("\t{}.f64 = std::fma({}.f64, {}.f64, -{}.f64);", ctx.f(ctx.insn.operands[0]),
+-              ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]),
+-              ctx.f(ctx.insn.operands[3]));
++  emit_fused(ctx, "{}.f64 = std::fma(a_, c_, -b_);");
+   return true;
+ }
+ 
+ bool build_fmsubs(BuilderContext& ctx) {
+-  ctx.emit_set_flush_mode(false);
+-  ctx.println("\t{}.f64 = double(float(std::fma({}.f64, {}.f64, -{}.f64)));",
+-              ctx.f(ctx.insn.operands[0]), ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]),
+-              ctx.f(ctx.insn.operands[3]));
++  emit_fused(ctx, "{}.f64 = double(std::fmaf(float(a_), float(c_), -float(b_)));");
+   return true;
+ }
+ 
+ bool build_fnmadd(BuilderContext& ctx) {
+-  ctx.emit_set_flush_mode(false);
+-  ctx.println("\t{}.f64 = -std::fma({}.f64, {}.f64, {}.f64);", ctx.f(ctx.insn.operands[0]),
+-              ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]),
+-              ctx.f(ctx.insn.operands[3]));
++  emit_fused(ctx, "{{ volatile double r_ = std::fma(a_, c_, b_); {}.f64 = -r_; }}");
+   return true;
+ }
+ 
+ bool build_fnmadds(BuilderContext& ctx) {
+-  ctx.emit_set_flush_mode(false);
+-  ctx.println("\t{}.f64 = double(float(-std::fma({}.f64, {}.f64, {}.f64)));",
+-              ctx.f(ctx.insn.operands[0]), ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]),
+-              ctx.f(ctx.insn.operands[3]));
++  emit_fused(ctx,
++             "{{ volatile float s_ = std::fmaf(float(a_), float(c_), float(b_)); "
++             "{}.f64 = double(-s_); }}");
+   return true;
+ }
+ 
+ bool build_fnmsub(BuilderContext& ctx) {
+-  ctx.emit_set_flush_mode(false);
+-  ctx.println("\t{}.f64 = -std::fma({}.f64, {}.f64, -{}.f64);", ctx.f(ctx.insn.operands[0]),
+-              ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]),
+-              ctx.f(ctx.insn.operands[3]));
++  emit_fused(ctx, "{{ volatile double r_ = std::fma(a_, c_, -b_); {}.f64 = -r_; }}");
+   return true;
+ }
  
  bool build_fnmsubs(BuilderContext& ctx) {
-   ctx.emit_set_flush_mode(false);
+-  ctx.emit_set_flush_mode(false);
 -  ctx.println("\t{}.f64 = double(float(-std::fma({}.f64, {}.f64, -{}.f64)));",
 -              ctx.f(ctx.insn.operands[0]), ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]),
 -              ctx.f(ctx.insn.operands[3]));
-+  ctx.println("\t{{ volatile float s_ = std::fmaf(float({}.f64), float({}.f64), -float({}.f64)); "
-+              "{}.f64 = double(-s_); }}",
-+              ctx.f(ctx.insn.operands[1]), ctx.f(ctx.insn.operands[2]), ctx.f(ctx.insn.operands[3]),
-+              ctx.f(ctx.insn.operands[0]));
++  emit_fused(ctx,
++             "{{ volatile float s_ = std::fmaf(float(a_), float(c_), -float(b_)); "
++             "{}.f64 = double(-s_); }}");
    return true;
  }
  

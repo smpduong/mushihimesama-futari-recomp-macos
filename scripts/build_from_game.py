@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 REPO = Path(__file__).resolve().parents[1]
 SDK_URL = "https://github.com/rexglue/rexglue-sdk.git"
 SDK_REVISION = "c94f5ebdcb3c9d1a460ca48e04f9758448f8d518"
-SDK_PATCH_SHA256 = "06ec6439b921e0c8804fcfe777bc11e6dfb50ff96aa9e64c05cfee84d3514b17"
+SDK_PATCH_SHA256 = "6dd730f12d7224b305dace04fab50fb3ba92dee983a51f1084af09f752034108"
 # Exact output of the pinned SDK's RefreshGeneratedGlue emitter for this
 # project's stable name/version/entrypoint directory. Codegen intentionally
 # replaces the public seed template with this SDK-owned file.
